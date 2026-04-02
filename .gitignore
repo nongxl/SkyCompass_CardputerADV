@@ -1,0 +1,11 @@
+.pio
+.vscode/
+.cache/
+compile_commands.json
+*.bin
+*.log
+logs.txt
+*.jpg
+*.png
+!README.md
+!docs/
