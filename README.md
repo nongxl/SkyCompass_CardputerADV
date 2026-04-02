@@ -1,8 +1,12 @@
 # 太阳位置分析工具（Sky Compass）
 
+**简体中文** | [English](README_EN.md)
+
 ## 项目概述
 
 SkyCompass（天空罗盘） 是一个运行在 M5Stack CardputerADV 上的天体导航应用，通过Cap LoRa-1262模块中的GNSS获取定位（没有GNSS亦可以设置离线经纬度），用于可视化太阳、月亮和银河在天空中的运行轨迹、天文潮汐计算。支持六轴传感器控制观察视角。 
+
+![应用截图](cover.jpg)
 
 ## 硬件条件
 
