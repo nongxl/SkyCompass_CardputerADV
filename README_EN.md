@@ -138,6 +138,12 @@ SkyCompass/
 - **Tide Model**: Astronomical potential only; does not include local basin or weather effects.
 - **Time**: Syncs with GNSS UTC (accuracy within system interrupt latency, typically ms range).
 
+## License
+
+This project is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE).
+
+**This license allows for personal, educational, and research use, but strictly prohibits any commercial use.**
+
 ## Roadmap
 
 - **Offline Terrain**: DEM-based obstruction analysis.
