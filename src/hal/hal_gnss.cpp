@@ -12,6 +12,10 @@ private:
     bool _isInStandby;
     MultipleSatellite* _gps;
     
+    uint32_t _lastCheckTime;
+    uint32_t _lastChars;
+    uint8_t _pinModeIdx;
+    
     static const int DEFAULT_RX_PIN = 15;
     static const int DEFAULT_TX_PIN = 13;
     static const uint32_t DEFAULT_BAUD = 115200;
@@ -20,7 +24,8 @@ private:
     static uint32_t _gpsSentences;
 
 public:
-    M5Gnss() : _enabled(false), _newData(false), _isInitialized(false), _isInStandby(false), _gps(nullptr) {
+    M5Gnss() : _enabled(false), _newData(false), _isInitialized(false), _isInStandby(false), _gps(nullptr),
+               _lastCheckTime(0), _lastChars(0), _pinModeIdx(0) {
         _data.latitude = 0.0;
         _data.longitude = 0.0;
         _data.altitude = 0.0;
@@ -72,6 +77,8 @@ public:
         _enabled = true;
         _isInitialized = true;
         _data.status = GNSS_STATUS_SEARCHING;
+        _lastCheckTime = millis();
+        _lastChars = _gpsChars;
         return true;
     }
 
@@ -82,6 +89,37 @@ public:
 
         _gps->updateGPS();
         
+        // 自动引脚侦测逻辑
+        uint32_t currentMillis = millis();
+        if (currentMillis - _lastCheckTime > 5000) {
+            if (_gpsChars == _lastChars && !_isInStandby) {
+                // 没有收到数据，切换引脚
+                _pinModeIdx = (_pinModeIdx + 1) % 3;
+                if (_pinModeIdx == 0) {
+                    _config.txPin = DEFAULT_TX_PIN; // 13
+                    _config.rxPin = DEFAULT_RX_PIN; // 15
+                    Serial.println("[GNSS] Auto-detect: Switching to internal pins TX=13, RX=15");
+                } else if (_pinModeIdx == 1) {
+                    _config.txPin = 2;
+                    _config.rxPin = 1;
+                    Serial.println("[GNSS] Auto-detect: Switching to Grove pins TX=2, RX=1");
+                } else {
+                    _config.txPin = 1;
+                    _config.rxPin = 2;
+                    Serial.println("[GNSS] Auto-detect: Switching to Grove pins TX=1, RX=2");
+                }
+                
+                // 重新初始化
+                delete _gps;
+                _gps = new MultipleSatellite(Serial1, _config.baudRate, SERIAL_8N1, _config.rxPin, _config.txPin);
+                _gps->begin();
+                _gps->setSystemBootMode(BOOT_FACTORY_START);
+                _data.status = GNSS_STATUS_SEARCHING;
+            }
+            _lastChars = _gpsChars;
+            _lastCheckTime = currentMillis;
+        }
+
         bool updated = false;
         
         if (_gps->location.isUpdated()) {

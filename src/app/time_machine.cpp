@@ -29,7 +29,7 @@ void TimeMachine::activate() {
     // 保存当前时间作为目标时间
     _targetTime = _positionManager->getTime();
     
-    // 检查时间是否有效，如果无效则使用默认本地时间（2026年3月3日 22:00）
+    // 检查时间是否有效，如果无效则使用默认本地时间（2026年7月14日 22:00）
     if (_targetTime.year == 0 || _targetTime.month == 0 || _targetTime.day == 0 || _targetTime.year > 100) {
         _targetTime = PositionManager::getDefaultTime();
         
@@ -50,7 +50,7 @@ void TimeMachine::activate() {
         _targetTime.hour = utcHour;
         _targetTime.minute = utcMinute;
         
-        Serial.println("[DEBUG] TimeMachine: Using default local time (2026-03-03 22:00:00)");
+        Serial.println("[DEBUG] TimeMachine: Using default local time (2026-07-14 22:00:00)");
     }
     
     // 设置手动时间

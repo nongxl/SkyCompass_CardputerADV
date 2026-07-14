@@ -519,37 +519,41 @@ void UIManager::drawMainPage() {
     // 太阳和月亮位置缓存机制，避免频繁计算
     static struct {
         uint32_t lastTimestamp;
-        SunPositionData sunPos;
-        MoonPositionData moonPos;
+        double sunAz, sunAlt;
+        double moonAz, moonAlt;
         bool valid;
-    } celestialCache = {0, {0,0,0,0,0,0,0,0}, {0,0,0,0,0}, false};
+    } celestialCache = {0, 0, 0, 0, 0, false};
     
-    // 只有当时间变化时才重新计算（精确到分钟）
-    uint32_t minuteTimestamp = timestamp - (timestamp % 60);
-    if (!celestialCache.valid || minuteTimestamp != celestialCache.lastTimestamp) {
-        // 计算太阳位置
-        if (_sunCalculator) {
-            celestialCache.sunPos = _sunCalculator->calculatePosition(timestamp, latitude, longitude);
-            _view3DRenderer->setSunPosition(celestialCache.sunPos.azimuth, celestialCache.sunPos.altitude);
+    // 只有当时间变化时才重新获取（精确到秒，因为有缓存插值）
+    if (!celestialCache.valid || timestamp != celestialCache.lastTimestamp) {
+        bool sunOk = false, moonOk = false;
+        
+        // 1. 尝试从 3D 渲染器的轨迹缓存中直接获取插值后的位置 (极快)
+        if (_view3DRenderer) {
+            sunOk = _view3DRenderer->getCachedSunPosition(timestamp, celestialCache.sunAz, celestialCache.sunAlt);
+            moonOk = _view3DRenderer->getCachedMoonPosition(timestamp, celestialCache.moonAz, celestialCache.moonAlt);
         }
         
-        // 计算月亮位置
-        if (_moonCalculator) {
-            celestialCache.moonPos = _moonCalculator->calculatePosition(timestamp, latitude, longitude);
-            _view3DRenderer->setMoonPosition(celestialCache.moonPos.azimuth, celestialCache.moonPos.altitude);
+        // 2. 如果缓存未就绪，则回退到全量天文计算 (较慢)
+        if (!sunOk && _sunCalculator) {
+            SunPositionData sunPos = _sunCalculator->calculatePosition(timestamp, latitude, longitude);
+            celestialCache.sunAz = sunPos.azimuth;
+            celestialCache.sunAlt = sunPos.altitude;
+        }
+        if (!moonOk && _moonCalculator) {
+            MoonPositionData moonPos = _moonCalculator->calculatePosition(timestamp, latitude, longitude);
+            celestialCache.moonAz = moonPos.azimuth;
+            celestialCache.moonAlt = moonPos.altitude;
         }
         
-        // 更新缓存
-        celestialCache.lastTimestamp = minuteTimestamp;
+        // 更新渲染器位置
+        if (_view3DRenderer) {
+            _view3DRenderer->setSunPosition(celestialCache.sunAz, celestialCache.sunAlt);
+            _view3DRenderer->setMoonPosition(celestialCache.moonAz, celestialCache.moonAlt);
+        }
+        
+        celestialCache.lastTimestamp = timestamp;
         celestialCache.valid = true;
-    } else {
-        // 使用缓存的位置数据
-        if (_sunCalculator) {
-            _view3DRenderer->setSunPosition(celestialCache.sunPos.azimuth, celestialCache.sunPos.altitude);
-        }
-        if (_moonCalculator) {
-            _view3DRenderer->setMoonPosition(celestialCache.moonPos.azimuth, celestialCache.moonPos.altitude);
-        }
     }
     
     _view3DRenderer->render(skyCenterX, skyCenterY, skyRadius);

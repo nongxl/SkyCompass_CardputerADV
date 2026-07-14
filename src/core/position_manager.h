@@ -3,7 +3,7 @@
 
 #include <Arduino.h>
 #include "hal/hal_gnss.h"
-
+#include <Preferences.h>
 /**
  * @brief 位置数据结构体
  */
@@ -38,6 +38,9 @@ private:
     bool _useManualPosition; // 是否使用手动设置的位置
     PositionData _manualPosition; // 手动设置的位置
     bool _defaultTimeLogged; // 是否已经输出过默认时间日志
+    Preferences _preferences; // NVS缓存
+    uint32_t _lastSaveTime; // 上次保存到NVS的时间
+
 
 public:
     /**

@@ -21,7 +21,12 @@ UserInput::UserInput(HalKeyboard* keyboard, TimeMachine* timeMachine, UIManager*
     _lastSKeyTime(0),
     _lastFKeyTime(0),
     _lastStepTime(0),
-    _lastCKeyTime(0) {
+    _lastCKeyTime(0),
+    _lastTabKeyTime(0),
+    _lastBKeyTime(0),
+    _lastRKeyTime(0),
+    _keyPressStartTime(0),
+    _lastDetectedKey(KEY_NONE) {
 }
 
 /**
@@ -68,16 +73,57 @@ void UserInput::processInput() {
     if (_keyboard->available()) {
         // 按键防抖
         unsigned long currentTime = millis();
-        if (currentTime - _lastKeyTime < _debounceDelay) {
-            return; // 忽略抖动的按键
-        }
-        _lastKeyTime = currentTime;
-        
         // 获取按键
         Key key = _keyboard->getKey();
         
-        // 根据当前页面调用不同的处理函数
+        // 特殊处理：时间调节键（逗号和斜杠）绕过通用防抖，以支持极速连发
+        bool isTimeKey = (key == KEY_COMMA || key == KEY_SLASH);
+        
+        // 检测按键状态切换（从无到有，或更换了按键）
+        if (key != _lastDetectedKey) {
+            _keyPressStartTime = currentTime;
+            _lastDetectedKey = key;
+        }
+
+        if (!isTimeKey && (currentTime - _lastKeyTime < _debounceDelay)) {
+            return; // 忽略抖动的普通按键
+        }
+        if (!isTimeKey) _lastKeyTime = currentTime;
+        
         UIPage currentPage = _uiManager->getCurrentPage();
+
+        // 全局 R 键重置逻辑
+        if (key == KEY_R) {
+            if (currentTime - _lastRKeyTime >= _functionKeyDelay) {
+                _lastRKeyTime = currentTime;
+                
+                // 1. 重置时间机器状态
+                _timeMachine->deactivate();
+                _timeMachine->resetToCurrentTime();
+                _uiManager->setTimeMachineActive(false);
+                
+                // 2. 禁用所有手动覆盖
+                _positionManager->enableManualTime(false);
+                _positionManager->enableManualPosition(false);
+                
+                // 3. 重新初始化设置页面的编辑缓存
+                _uiManager->initPositionSettings();
+                
+                Serial.println("[UserInput] Global reset to NVS/GNSS data triggered");
+                
+                // 4. 刷新界面或返回主页
+                if (currentPage == PAGE_TIME_MACHINE || currentPage == PAGE_SETTINGS || currentPage == PAGE_SUN_DATA) {
+                    _uiManager->setPage(PAGE_MAIN);
+                } else if (currentPage == PAGE_MAIN) {
+                    _uiManager->redrawMainPage();
+                } else if (currentPage == PAGE_TIDE) {
+                    _uiManager->redrawTidePage();
+                }
+            }
+            return; // 消费掉按键，不再分发
+        }
+        
+        // 根据当前页面调用不同的处理函数
         switch (currentPage) {
             case PAGE_MAIN:
                 handleMainPageInput(key);
@@ -152,8 +198,13 @@ void UserInput::handleMainPageInput(Key key) {
             break;
         case KEY_COMMA: // 逗号键（左）减少时间
             if (currentTime - _lastStepTime >= _stepRepeatDelay) {
-                // 由于全屏重绘较慢会导致触发间隔拉长，将连按判定阈值放宽到 400ms，长按时步长提升至 0.5h (1800) 或更大。
-                int32_t step = (currentTime - _lastStepTime < 400) ? -1800 : -900;
+                // 首发延迟逻辑：第一次按下立即触发，后续触发需满足长按时间阈值
+                bool isFirstPress = (currentTime - _lastStepTime > 400);
+                bool isLongPress = (currentTime - _keyPressStartTime > 400);
+                
+                if (!isFirstPress && !isLongPress) break; // 处于首发后的等待期，防止短按误触发
+
+                int32_t step = isLongPress ? -900 : -1800; // 长按 15min，短按 30min
                 _lastStepTime = currentTime;
                 _timeMachine->adjustTime(step);
                 
@@ -166,8 +217,13 @@ void UserInput::handleMainPageInput(Key key) {
             break;
         case KEY_SLASH: // 斜杠键（右）增加时间
             if (currentTime - _lastStepTime >= _stepRepeatDelay) {
-                // 由于全屏重绘较慢会导致触发间隔拉长，将连按判定阈值放宽到 400ms，长按时步长提升至 0.5h (1800) 或更大。
-                int32_t step = (currentTime - _lastStepTime < 400) ? 1800 : 900;
+                // 首发延迟逻辑
+                bool isFirstPress = (currentTime - _lastStepTime > 400);
+                bool isLongPress = (currentTime - _keyPressStartTime > 400);
+                
+                if (!isFirstPress && !isLongPress) break;
+
+                int32_t step = isLongPress ? 900 : 1800;
                 _lastStepTime = currentTime;
                 _timeMachine->adjustTime(step);
                 

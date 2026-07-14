@@ -323,7 +323,10 @@ void View3DRenderer::render3D(uint16_t centerX, uint16_t centerY, uint16_t radiu
     // 1. 绘制地下天体轨迹 (远景，Z < 0)
     if (_config.showSunPath) drawSunPath3D(centerX, centerY, radius, false);
     if (_config.showMoonPath) drawMoonPath3D(centerX, centerY, radius, false);
-    if (_config.showGalaxyPath) drawGalaxyPath3D(centerX, centerY, radius, false);
+    if (_config.showGalaxyPath) {
+        updateGalaxyProjectedPoints(centerX, centerY, radius);
+        drawGalaxyPath3D(centerX, centerY, radius, false);
+    }
     
     // 地下的实体 (远景)
     float sunAz = _sunAzimuth, sunAlt = _sunAltitude;
@@ -694,60 +697,43 @@ void View3DRenderer::drawMoonPath3D(uint16_t centerX, uint16_t centerY, uint16_t
     }
 }
 
-void View3DRenderer::drawGalaxyPath3D(uint16_t centerX, uint16_t centerY, uint16_t radius, bool isForeground) {
+void View3DRenderer::updateGalaxyProjectedPoints(uint16_t centerX, uint16_t centerY, uint16_t radius) {
     if (!_display || !_celestialCore || !_positionManager) return;
-    
-    uint16_t width = _display->getWidth();
-    uint16_t height = _display->getHeight();
-    
-    // 获取当前时间戳
+
     uint32_t currentTimestamp = _positionManager->getTimestamp();
-    TimeData localTime = _positionManager->getLocalTimeData(currentTimestamp);
-    uint32_t currentDay = currentTimestamp / 86400;
-    int currentHour = localTime.hour;
-    
-    // 优化：银道面在天球上的位置相对恒星是固定的。
-    // 1. 静态星表初始化 (仅在系统启动或清空后执行一次，RA/Dec 与日期无关)
+    PositionData position = _positionManager->getPosition();
+    double lat = position.latitude;
+    double lon = position.longitude;
+
+    // 1. 静态星表初始化
     if (_galaxyStars.empty()) {
         const int numLonPoints = 24; 
         const int particlesPerPoint = 10;
-        
         for (int i = 0; i < numLonPoints; i++) {
             double baseLon = (double)i / numLonPoints * 360.0;
             for (int p = 0; p < particlesPerPoint; p++) {
                 double seed_source = (double)i * 2.368 + (double)p * 7.421;
                 double seedLat = sin(seed_source * 1.57);
                 double seedLon = cos(seed_source * 2.63);
-                
                 double galacticLon = baseLon + seedLon * 4.0;
                 if (galacticLon < 0) galacticLon += 360.0;
                 if (galacticLon >= 360.0) galacticLon -= 360.0;
-                
                 double normDist = fabs(galacticLon);
                 if (normDist > 180.0) normDist = 360.0 - normDist;
                 normDist /= 180.0;
-                
                 double latSpread = 1.0 + (5.0 * (1.0 - normDist * normDist));
                 double galacticLat = seedLat * latSpread;
-                
                 CelestialEquatorial eq = _celestialCore->getGalacticEquatorial(galacticLon, galacticLat);
                 CelestialStar star = {(float)eq.ra, (float)eq.dec};
                 _galaxyStars.push_back(star);
             }
         }
     }
-    
-    // 2. 银河24小时投影缓存（滑动窗口：小时粒度增量更新，彻底消除跨日大卡顿）
-    PositionData position = _positionManager->getPosition();
-    double lat = position.latitude;
-    double lon = position.longitude;
-    
-    // 窗口起始：本地时间对应 UTC 整点的 12 小时前
+
+    // 2. 银河24小时投影缓存更新
     uint32_t currentUTCHour = currentTimestamp / 3600;
     uint32_t windowStartHour = currentUTCHour - 12; 
-    
     if (!_galaxyCache.isValid) {
-        // 首次：全量计算 24 小时
         for (int i = 0; i < 24; i++) {
             uint32_t ts = (windowStartHour + i) * 3600;
             double lst = _celestialCore->calculateLST(ts, lon);
@@ -760,17 +746,11 @@ void View3DRenderer::drawGalaxyPath3D(uint16_t centerX, uint16_t centerY, uint16
         _galaxyCache.cachedBaseHour = windowStartHour;
         _galaxyCache.isValid = true;
     } else if (windowStartHour != _galaxyCache.cachedBaseHour) {
-        // 增量更新：滑动小时槽位
         int32_t hDiff = (int32_t)windowStartHour - (int32_t)_galaxyCache.cachedBaseHour;
-        if (abs(hDiff) >= 24) {
-            _galaxyCache.isValid = false; 
-        } else if (hDiff > 0) {
+        if (abs(hDiff) >= 24) { _galaxyCache.isValid = false; }
+        else if (hDiff > 0) {
             for (int d = 0; d < hDiff; d++) {
-                // 将所有槽位向前平移
-                for (int i = 0; i < 23; i++) {
-                    _galaxyCache.hourlyPoints[i] = std::move(_galaxyCache.hourlyPoints[i+1]);
-                }
-                // 计算最后 1 个新小时
+                for (int i = 0; i < 23; i++) _galaxyCache.hourlyPoints[i] = std::move(_galaxyCache.hourlyPoints[i+1]);
                 uint32_t nextTs = (_galaxyCache.cachedBaseHour + 24) * 3600;
                 double lst = _celestialCore->calculateLST(nextTs, lon);
                 _galaxyCache.hourlyPoints[23].clear();
@@ -782,9 +762,7 @@ void View3DRenderer::drawGalaxyPath3D(uint16_t centerX, uint16_t centerY, uint16
             }
         } else {
             for (int d = 0; d < -hDiff; d++) {
-                for (int i = 23; i > 0; i--) {
-                    _galaxyCache.hourlyPoints[i] = std::move(_galaxyCache.hourlyPoints[i-1]);
-                }
+                for (int i = 23; i > 0; i--) _galaxyCache.hourlyPoints[i] = std::move(_galaxyCache.hourlyPoints[i-1]);
                 _galaxyCache.cachedBaseHour--;
                 uint32_t prevTs = _galaxyCache.cachedBaseHour * 3600;
                 double lst = _celestialCore->calculateLST(prevTs, lon);
@@ -796,134 +774,110 @@ void View3DRenderer::drawGalaxyPath3D(uint16_t centerX, uint16_t centerY, uint16
             }
         }
     }
-    
-    // 3. 使用缓存的银河粒子位置进行插值渲染
-    // 由于缓存现在以 windowStartHour 为基准，我们需要计算当前时间相对于窗口起始点的偏移小时
-    int32_t hIdx = (int32_t)currentUTCHour - (int32_t)_galaxyCache.cachedBaseHour;
-    if (hIdx < 0) hIdx = 0;
-    if (hIdx > 22) hIdx = 22; // 确保 hIdx+1 不越界
-    
-    float interpolationFactor = (float)(currentTimestamp % 3600) / 3600.0f;
-    
-    _galaxyPathPoints.clear();
-    for (size_t i = 0; i < _galaxyStars.size(); i++) {
-        Point3D currentPoint, nextPoint;
-        if (i < _galaxyCache.hourlyPoints[hIdx].size() && i < _galaxyCache.hourlyPoints[hIdx+1].size()) {
-            currentPoint = _galaxyCache.hourlyPoints[hIdx][i];
-            nextPoint = _galaxyCache.hourlyPoints[hIdx+1][i];
-            
-            // 线性插值
-            Point3D interpolated = {
-                currentPoint.x + (nextPoint.x - currentPoint.x) * interpolationFactor,
-                currentPoint.y + (nextPoint.y - currentPoint.y) * interpolationFactor,
-                currentPoint.z + (nextPoint.z - currentPoint.z) * interpolationFactor
-            };
-            
-            // 应用相机旋转
-            Point3D rotated = applyCameraRotation(interpolated);
-            
-            // 投影到屏幕
-            Point2D p2d = project3DPoint(rotated, centerX, centerY, radius);
-            
-            // 存储屏幕坐标和深度
-            _galaxyPathPoints.push_back({(float)p2d.x, (float)p2d.y, rotated.z});
-        }
+
+    // 3. 计算可见度和基础颜色
+    float galaxyVisibility = 1.0f;
+    if (_sunAltitude > -12) {
+        float sunFactor = (_sunAltitude + 12) / 6.0f;
+        galaxyVisibility *= max(0.0f, 1.0f - sunFactor);
+    }
+    if (_moonAltitude > 0) { 
+        float moonFactor = _moonAltitude / 45.0f;
+        galaxyVisibility *= max(0.0f, 1.0f - moonFactor);
+    }
+    galaxyVisibility = max(0.0f, min(1.0f, galaxyVisibility));
+    _config.skyColor = interpolateColor(0x0000, 0x18C3, galaxyVisibility);
+
+    uint8_t baseR, baseG, baseB;
+    if (galaxyVisibility < 0.1f) { baseR = 32; baseG = 32; baseB = 48; }
+    else if (galaxyVisibility < 0.5f) {
+        baseR = 32 + (uint8_t)((8 - 32) * galaxyVisibility / 0.5f);
+        baseG = 32 + (uint8_t)((66 - 32) * galaxyVisibility / 0.5f);
+        baseB = 48 + (uint8_t)((128 - 48) * galaxyVisibility / 0.5f);
+    } else {
+        baseR = 8 + (uint8_t)((16 - 8) * (galaxyVisibility - 0.5f) / 0.5f);
+        baseG = 66 + (uint8_t)((132 - 66) * (galaxyVisibility - 0.5f) / 0.5f);
+        baseB = 128 + (uint8_t)((255 - 128) * (galaxyVisibility - 0.5f) / 0.5f);
     }
 
-    // 逻辑触发日志，避免快进拥塞
-    if (_lastGalaxyPathDay != currentDay) {
-        _lastGalaxyPathDay = currentDay;
-        _celestialCore->calculateGalaxyCenter(currentTimestamp, lat, lon); // 启用银河计算日志
-    }
-    
-    // ... 可见度计算逻辑 ...
-    float galaxyVisibility = 1.0f;
-    if (_celestialCore) {
-        // 直接使用已有的成员变量（由 UIManager 在每一帧开始时通过 setSunPosition 设置）
-        // 转换回弧度
-        double sunAz = _sunAzimuth * DEG_TO_RAD;
-        double sunAlt = _sunAltitude * DEG_TO_RAD;
-        double moonAz = _moonAzimuth * DEG_TO_RAD;
-        double moonAlt = _moonAltitude * DEG_TO_RAD;
-        
-        // 简单估算：太阳、月亮高于地平线则银河变淡
-        // 1. 太阳影响 (白天基本看不见)
-        if (_sunAltitude > -12) { // 曙暮光后期开始消失
-            float sunFactor = (_sunAltitude + 12) / 6.0f;
-            galaxyVisibility *= max(0.0f, 1.0f - sunFactor);
-        }
-        
-        if (_moonAltitude > 0) { 
-            float moonFactor = _moonAltitude / 45.0f; // 45度以上影响最大
-            galaxyVisibility *= max(0.0f, 1.0f - moonFactor);
-        }
-        
-        galaxyVisibility = max(0.0f, min(1.0f, galaxyVisibility));
-    }
-    
-    _config.skyColor = interpolateColor(0x0000, 0x18C3, galaxyVisibility);
-    
-    // 通过直接乘以可见度系数来模拟 Alpha 效果
-    uint8_t r = (uint8_t)(80 * galaxyVisibility);
-    uint8_t g = (uint8_t)(80 * galaxyVisibility);
-    uint8_t b = (uint8_t)(180 * galaxyVisibility);
-    _display->setColor(r, g, b);
-    if (galaxyVisibility < 0.1f) {
-        _display->setColor(32, 32, 48); // 非常暗的灰色（几乎不可见）
-    } else if (galaxyVisibility < 0.5f) {
-        int r = 32 + (int)((8 - 32) * galaxyVisibility / 0.5f);
-        int g = 32 + (int)((66 - 32) * galaxyVisibility / 0.5f);
-        int b = 48 + (int)((128 - 48) * galaxyVisibility / 0.5f);
-        _display->setColor(r, g, b);
-    } else {
-        int r = 8 + (int)((16 - 8) * (galaxyVisibility - 0.5f) / 0.5f);
-        int g = 66 + (int)((132 - 66) * (galaxyVisibility - 0.5f) / 0.5f);
-        int b = 128 + (int)((255 - 128) * (galaxyVisibility - 0.5f) / 0.5f);
-        _display->setColor(r, g, b);
-    }
-    
-    // 渲染粒子云
-    size_t totalParticles = _galaxyPathPoints.size();
-    if (totalParticles == 0) return;
-    
-    // 银河中心粒子组索引范围
+    // 4. 计算所有投影点
+    int32_t hIdx = (int32_t)currentUTCHour - (int32_t)_galaxyCache.cachedBaseHour;
+    if (hIdx < 0) hIdx = 0; if (hIdx > 22) hIdx = 22;
+    float interpolationFactor = (float)(currentTimestamp % 3600) / 3600.0f;
+
+    _galaxyProjectedPoints.clear();
     const int particlesPerPoint = 10;
+    const int totalParticles = _galaxyStars.size();
     const int numLonGroups = totalParticles / particlesPerPoint;
-    
-    for (size_t i = 0; i < totalParticles; i++) {
-        const Point3D& currentP3d = _galaxyPathPoints[i];
+
+    for (size_t i = 0; i < _galaxyStars.size(); i++) {
+        if (i >= _galaxyCache.hourlyPoints[hIdx].size() || i >= _galaxyCache.hourlyPoints[hIdx+1].size()) continue;
         
-        // 判定前景/背景 (currentP3d.z 已在流水线中存入相机深度)
-        bool isPointIn = (isForeground ? (currentP3d.z >= 0) : (currentP3d.z < 0));
-        if (!isPointIn) continue;
+        const Point3D& p0 = _galaxyCache.hourlyPoints[hIdx][i];
+        const Point3D& p1 = _galaxyCache.hourlyPoints[hIdx+1][i];
         
-        // 银河核球视觉偏移处理
-        // dist=0 对应银河中心 (l≈0°, lonIdx=0/numLonGroups)，dist=halfN 对应银河边缘 (l≈180°)
+        Point3D interpolated = {
+            p0.x + (p1.x - p0.x) * interpolationFactor,
+            p0.y + (p1.y - p0.y) * interpolationFactor,
+            p0.z + (p1.z - p0.z) * interpolationFactor
+        };
+        
+        Point3D rotated = applyCameraRotation(interpolated);
+        Point2D p2d = project3DPoint(rotated, centerX, centerY, radius);
+        
+        // 核球计算
         int lonIdx = i / particlesPerPoint; 
         float dist = (float)lonIdx;
         if (dist > (float)numLonGroups / 2.0f) dist = (float)numLonGroups - dist;
-        
-        float maxSize = 6.0f; // 核心粒子最大尺寸缩小，更精细
+        float maxSize = 6.0f;
         float minSize = 0.5f;
         float halfN = (float)numLonGroups / 2.0f;
-        
-        // 核球视觉权重：中心更厚、更亮
-        float t = dist / halfN; // 0 (中心) 到 1 (边缘)
+        float t = dist / halfN;
         float size = minSize + (maxSize - minSize) * (1.0f - t * t);
+        bool isCore = (dist < numLonGroups / 8.0f);
+
+        GalaxyProjectedPoint gp;
+        gp.x = (int16_t)p2d.x;
+        gp.y = (int16_t)p2d.y;
+        gp.z = rotated.z;
+        gp.size = (uint8_t)(isCore ? size : (size / 2.0f + 0.5f));
+        gp.colorR = baseR; gp.colorG = baseG; gp.colorB = baseB;
+        gp.isCore = isCore;
         
-        // 性能优化：直接使用流水线预存的屏幕坐标
-        int16_t sx = (int16_t)currentP3d.x;
-        int16_t sy = (int16_t)currentP3d.y;
+        _galaxyProjectedPoints.push_back(gp);
+    }
+
+    uint32_t currentDay = currentTimestamp / 86400;
+    if (_lastGalaxyPathDay != currentDay) {
+        _lastGalaxyPathDay = currentDay;
+        _celestialCore->calculateGalaxyCenter(currentTimestamp, lat, lon);
+    }
+}
+
+void View3DRenderer::drawGalaxyPath3D(uint16_t centerX, uint16_t centerY, uint16_t radius, bool isForeground) {
+    if (!_display || _galaxyProjectedPoints.empty()) return;
+    
+    uint16_t width = _display->getWidth();
+    uint16_t height = _display->getHeight();
+    
+    // 设置基础颜色
+    const auto& firstP = _galaxyProjectedPoints[0];
+    _display->setColor(firstP.colorR, firstP.colorG, firstP.colorB);
+    
+    for (const auto& gp : _galaxyProjectedPoints) {
+        bool isPointIn = (isForeground ? (gp.z >= 0) : (gp.z < 0));
+        if (!isPointIn) continue;
         
-        if (sx >= 0 && sx < width && sy >= 0 && sy < height) {
-            // 根据距离调整亮度：中心稍亮，边缘稍暗
-            // 统一使用实心填充 (true)，提升质感
-            if (dist < numLonGroups / 8.0f) {
-                // 核心区域粒子
-                _display->drawCircle(sx, sy, (uint8_t)size, true);
+        if (gp.x >= 0 && gp.x < width && gp.y >= 0 && gp.y < height) {
+            if (gp.size <= 1 || (!gp.isCore && gp.size <= 2)) {
+                // 性能优化：极小或非核心次小粒子直接画点，减少绘图驱动负担
+                _display->drawPixel(gp.x, gp.y);
+            } else if (gp.size == 2) {
+                // 核心区域小粒子画 2x2 块，保持紧凑感
+                _display->drawRect(gp.x - 1, gp.y - 1, 2, 2, true);
             } else {
-                // 银盘区域粒子
-                _display->drawCircle(sx, sy, (uint8_t)(size / 2.0f + 0.5f), true);
+                // 核心或较大粒子保留圆型质感
+                _display->drawCircle(gp.x, gp.y, gp.size, true);
             }
         }
     }
@@ -1030,87 +984,39 @@ void View3DRenderer::drawMoonPhase3D(int16_t x, int16_t y, uint8_t size) {
     
     // 使用缓存的月相数据
     
-    // 这里不再应用 IMU（相机）旋转矩阵。因为月相是指地球观察者看到的日照阴影部分
-    // 它只受日月真实坐标系统影响。假如我们在屏幕中心看到它，仅仅偏航角改变（相机转了而已），月亮照亮的弦角是不会自旋的。
-    // 计算太阳到月亮的单位向量
-    Point3D sunToMoon = { moonPhaseCache.sunVector.x - moonPhaseCache.moonVector.x, moonPhaseCache.sunVector.y - moonPhaseCache.moonVector.y, moonPhaseCache.sunVector.z - moonPhaseCache.moonVector.z };
+    // 使用相机的旋转矩阵将真实的日月空间向量转换到屏幕坐标系
+    Point3D rotatedSun = applyCameraRotation(moonPhaseCache.sunVector);
+    Point3D rotatedMoon = applyCameraRotation(moonPhaseCache.moonVector);
     
-    // 归一化太阳到月亮的向量
-    double sunToMoonLength = sqrt(sunToMoon.x * sunToMoon.x + sunToMoon.y * sunToMoon.y + sunToMoon.z * sunToMoon.z);
-    if (sunToMoonLength > 0) {
-        sunToMoon.x /= sunToMoonLength;
-        sunToMoon.y /= sunToMoonLength;
-        sunToMoon.z /= sunToMoonLength;
-    }
+    // 计算在屏幕 2D 投影上的真实朝向 (注意屏幕 Y 轴是朝下的)
+    double screenDx = rotatedSun.x - rotatedMoon.x;
+    double screenDy = -(rotatedSun.y - rotatedMoon.y); 
+    double screenSunAngle = atan2(screenDy, screenDx);
     
-    // 计算月球表面的法向量（指向观察者）
-    Point3D moonNormal = { -moonPhaseCache.moonVector.x, -moonPhaseCache.moonVector.y, -moonPhaseCache.moonVector.z };
-    
-    // 计算月球表面的切向量
-    Point3D tangent1, tangent2;
-    
-    // 如果月球法线接近Z轴，使用X轴作为参考
-    if (fabs(moonNormal.z) > 0.8) {
-        tangent1 = { 1.0, 0.0, 0.0 };
-    } else {
-        tangent1 = { 0.0, 0.0, 1.0 };
-    }
-    
-    // 计算垂直于法线的切向量（叉积）
-    tangent1 = { 
-        tangent1.y * moonNormal.z - tangent1.z * moonNormal.y,
-        tangent1.z * moonNormal.x - tangent1.x * moonNormal.z,
-        tangent1.x * moonNormal.y - tangent1.y * moonNormal.x
-    };
-    
-    // 归一化切向量
-    double tangent1Length = sqrt(tangent1.x * tangent1.x + tangent1.y * tangent1.y + tangent1.z * tangent1.z);
-    if (tangent1Length > 0) {
-        tangent1.x /= tangent1Length;
-        tangent1.y /= tangent1Length;
-        tangent1.z /= tangent1Length;
-    }
-    
-    // 计算第二个切向量（垂直于法线和第一个切向量）
-    tangent2 = { 
-        moonNormal.y * tangent1.z - moonNormal.z * tangent1.y,
-        moonNormal.z * tangent1.x - moonNormal.x * tangent1.z,
-        moonNormal.x * tangent1.y - moonNormal.y * tangent1.x
-    };
-    
-    // 归一化第二个切向量
-    double tangent2Length = sqrt(tangent2.x * tangent2.x + tangent2.y * tangent2.y + tangent2.z * tangent2.z);
-    if (tangent2Length > 0) {
-        tangent2.x /= tangent2Length;
-        tangent2.y /= tangent2Length;
-        tangent2.z /= tangent2Length;
-    }
-    
-    // 计算太阳方向在月亮视平面上的投影
-    double sunX = sunToMoon.x * tangent1.x + sunToMoon.y * tangent1.y + sunToMoon.z * tangent1.z;
-    double sunY = sunToMoon.x * tangent2.x + sunToMoon.y * tangent2.y + sunToMoon.z * tangent2.z;
-    
-    // 计算太阳方向的角度
-    double sunAngle = atan2(sunY, sunX);
-    
-    // 绘制月面
-    _display->setColor(255, 255, 255); // 白色
-    _display->drawCircle(x, y, size, true);
-    
-    // 绘制阴影部分
+    // 绘制月相 (逐像素精确绘制)
     double k = moonPhaseCache.k;
-    if (k < 1.0) {
-        _display->setColor(0, 0, 0); // 黑色
-        
-        // 计算阴影圆心的偏移量：沿光照方向平移 R * k
-        double offset = size * k;
-        double shadowOffsetX = cos(sunAngle) * offset;
-        double shadowOffsetY = sin(sunAngle) * offset;
-        
-        // 绘制阴影圆（半径与月亮相同）
-        int shadowX = x + shadowOffsetX;
-        int shadowY = y + shadowOffsetY;
-        _display->drawCircle(shadowX, shadowY, size, true);
+    double cosSun = cos(-screenSunAngle);
+    double sinSun = sin(-screenSunAngle);
+    
+    for (int dy = -size; dy <= size; dy++) {
+        for (int dx = -size; dx <= size; dx++) {
+            if (dx*dx + dy*dy <= size*size) {
+                // 将像素点旋转到太阳在正 X 轴的局部坐标系
+                double rx = dx * cosSun - dy * sinSun;
+                double ry = dx * sinSun + dy * cosSun;
+                
+                // 该 Y 切片上的圆边界 X 坐标
+                double bx = sqrt(size*size - ry*ry);
+                
+                // 真正的晨昏圈（terminator）是投影成椭圆的一条弧线
+                if (rx >= k * bx) {
+                    _display->setColor(255, 255, 255); // 亮面 (被太阳照亮)
+                } else {
+                    _display->setColor(40, 40, 40);    // 暗面 (地球照，深灰色增加立体感)
+                }
+                _display->drawPixel(x + dx, y + dy);
+            }
+        }
     }
 }
 
@@ -1127,15 +1033,15 @@ void View3DRenderer::updateSmoothTransition() {
 Point2D View3DRenderer::project3DPoint(const Point3D& point, uint16_t centerX, uint16_t centerY, uint16_t radius) {
     // 注意：调用者已预先完成了应用 IMU 旋转的 3D 变换。
     // 使用正交投影逻辑（Orthogonal Projection）以确保天体轨迹与基于 SkyHemisphere 的地平圈完全同步。
-    // 移除基于相机距离的 Z 轴透视缩放 (scale = distance / (distance - z))，
-    // 因为地平圈是按照正交方式投影到屏幕圆盘上的。
-    // 即使在 drawCelestialBody3D 中，我们也使用 applyCameraRotation，
-    // 它现在已使用了我们在 render3D 中预计算的矩阵。
-    // 这消除了此处的冗余三角运算。
-    int16_t x = (int16_t)(point.x * radius + centerX);
-    int16_t y = (int16_t)(-point.y * radius + centerY);
     
-    return Point2D(x, y);
+    // 我们在这里实现一个等效于 SkyHemisphere::azAltToScreen 的 3D 投影逻辑：
+    // x = centerX + x_3d * radius
+    // y = centerY - y_3d * radius
+    
+    float sx = (float)centerX + point.x * (float)radius;
+    float sy = (float)centerY - point.y * (float)radius;
+    
+    return Point2D((int16_t)sx, (int16_t)sy);
 }
 
 Point3D View3DRenderer::applyCameraRotation(const Point3D& point) {

@@ -134,7 +134,16 @@ private:
     std::vector<ProjectedPoint> _moonPathPoints2D; // 月亮轨迹 2D 投影缓存
     
     std::vector<CelestialStar> _galaxyStars;       // 银河静态星表 (RA/Dec)
-    std::vector<Point3D> _galaxyPathPoints; // 银河当前帧投影缓存
+    std::vector<Point3D> _galaxyPathPoints; // 银河当前帧投影缓存（中间变量，将被移除或复用）
+
+    struct GalaxyProjectedPoint {
+        int16_t x, y;
+        float z;
+        uint8_t size;
+        uint8_t colorR, colorG, colorB;
+        bool isCore;
+    };
+    std::vector<GalaxyProjectedPoint> _galaxyProjectedPoints; // 银河当前帧最终投影缓存
     
     // 缓存机制：记录上次计算的日期，避免重复计算轨迹
     uint32_t _lastSunPathDay;  // 上次计算太阳轨迹的日期（timestamp / 86400）
@@ -185,6 +194,7 @@ private:
     void drawCardinalPoints3D(uint16_t centerX, uint16_t centerY, uint16_t radius);
     void drawSunPath3D(uint16_t centerX, uint16_t centerY, uint16_t radius, bool isForeground = true);
     void drawMoonPath3D(uint16_t centerX, uint16_t centerY, uint16_t radius, bool isForeground = true);
+    void updateGalaxyProjectedPoints(uint16_t centerX, uint16_t centerY, uint16_t radius);
     void drawGalaxyPath3D(uint16_t centerX, uint16_t centerY, uint16_t radius, bool isForeground = true);
     void drawCelestialBody3D(uint16_t centerX, uint16_t centerY, uint16_t radius, float azimuth, float altitude, uint16_t color, uint8_t size);
     void drawWorldReferencePoint3D(uint16_t centerX, uint16_t centerY, uint16_t radius);

@@ -27,9 +27,12 @@ private:
     unsigned long _lastCKeyTime; // C键上次触发时间
     unsigned long _lastTabKeyTime; // Tab键上次触发时间
     unsigned long _lastBKeyTime; // B键上次触发时间
+    unsigned long _lastRKeyTime; // R键上次触发时间
+    unsigned long _keyPressStartTime; // 当前按键首次按下的时间
+    Key _lastDetectedKey;       // 上次检测到的按键
     
-    const unsigned long _debounceDelay = 200;      // 通用按键防抖（毫秒）
-    const unsigned long _functionKeyDelay = 300;   // 功能键防抖（毫秒）
+    const unsigned long _debounceDelay = 400;      // 通用按键防抖（毫秒）
+    const unsigned long _functionKeyDelay = 600;   // 功能键防抖（毫秒）
     const unsigned long _stepRepeatDelay = 25;    // 长按步进频率控制（毫秒，即 40Hz）
 
 public:
