@@ -29,29 +29,29 @@ void TimeMachine::activate() {
     // 保存当前时间作为目标时间
     _targetTime = _positionManager->getTime();
     
-    // 检查时间是否有效，如果无效则使用默认本地时间（2026年7月14日 22:00）
-    if (_targetTime.year == 0 || _targetTime.month == 0 || _targetTime.day == 0 || _targetTime.year > 100) {
-        _targetTime = PositionManager::getDefaultTime();
-        
-        // 计算时区偏移（根据经度计算，每15度对应1小时）
-        PositionData pos = _positionManager->getPosition();
-        double timezone = pos.longitude / 15.0;
-        
-        // 将本地时间转换为UTC时间
-        int32_t timezoneOffset = (int32_t)(timezone * 3600);
-        int64_t localTimestamp = (int64_t)_targetTime.hour * 3600LL + _targetTime.minute * 60LL + _targetTime.second - timezoneOffset;
-        
-        // 处理跨天情况
-        int8_t utcHour = (localTimestamp / 3600) % 24;
-        if (utcHour < 0) utcHour += 24;
-        int8_t utcMinute = (localTimestamp % 3600) / 60;
-        if (utcMinute < 0) utcMinute += 60;
-        
-        _targetTime.hour = utcHour;
-        _targetTime.minute = utcMinute;
-        
-        Serial.println("[DEBUG] TimeMachine: Using default local time (2026-07-14 22:00:00)");
-    }
+        // 检查时间是否有效，如果无效则使用默认本地时间（2026年8月14日 00:00）
+        if (_targetTime.year == 0 || _targetTime.month == 0 || _targetTime.day == 0 || _targetTime.year > 100) {
+            _targetTime = PositionManager::getDefaultTime();
+            
+            // 计算时区偏移（根据经度计算，每15度对应1小时）
+            PositionData pos = _positionManager->getPosition();
+            double timezone = pos.longitude / 15.0;
+            
+            // 将本地时间转换为UTC时间
+            int32_t timezoneOffset = (int32_t)(timezone * 3600);
+            int64_t localTimestamp = (int64_t)_targetTime.hour * 3600LL + _targetTime.minute * 60LL + _targetTime.second - timezoneOffset;
+            
+            // 处理跨天情况
+            int8_t utcHour = (localTimestamp / 3600) % 24;
+            if (utcHour < 0) utcHour += 24;
+            int8_t utcMinute = (localTimestamp % 3600) / 60;
+            if (utcMinute < 0) utcMinute += 60;
+            
+            _targetTime.hour = utcHour;
+            _targetTime.minute = utcMinute;
+            
+            Serial.println("[DEBUG] TimeMachine: Using default local time (2026-08-14 00:00:00)");
+        }
     
     // 设置手动时间
     _positionManager->setManualTime(_targetTime);

@@ -23,22 +23,31 @@ View3DRenderer::View3DRenderer() :
     _lastSunPathDay(0),
     _lastMoonPathDay(0),
     _lastGalaxyPathDay(0),
-    _moonPathUpdateIndex(-1) {
+    _moonPathUpdateIndex(-1),
+    _moonLitR(255),
+    _moonLitG(255),
+    _moonLitB(255) {
     
     // 初始化25点滑动窗口缓存
     _sunTrajectoryCache.isValid = false;
     _sunTrajectoryCache.baseTimestamp = 0;
     _sunTrajectoryCache.cachedBaseHour = 0;
+    _sunTrajectoryCache.points3D.reserve(50);
+    _sunPathPoints2D.reserve(50);
     
     _moonTrajectoryCache.isValid = false;
     _moonTrajectoryCache.baseTimestamp = 0;
     _moonTrajectoryCache.cachedBaseHour = 0;
+    _moonTrajectoryCache.points3D.reserve(50);
+    _moonPathPoints2D.reserve(50);
     
     _galaxyCache.isValid = false;
     _galaxyCache.cachedBaseHour = 0;
     for (int i = 0; i < 24; i++) {
+        _galaxyCache.hourlyPoints[i].reserve(240);
         _galaxyCache.hourlyPoints[i].clear();
     }
+    _galaxyProjectedPoints.reserve(240);
     
     _camera.pitch = 0;
     _camera.roll = 0;
@@ -172,6 +181,19 @@ void View3DRenderer::setSunCalculator(SunCalculator* calculator) {
 
 void View3DRenderer::setMoonCalculator(MoonCalculator* calculator) {
     _moonCalculator = calculator;
+}
+
+void View3DRenderer::setMoonLitColor(uint8_t r, uint8_t g, uint8_t b) {
+    _moonLitR = r;
+    _moonLitG = g;
+    _moonLitB = b;
+}
+
+void View3DRenderer::resetTrajectoryCache() {
+    _sunTrajectoryCache.isValid = false;
+    _moonTrajectoryCache.isValid = false;
+    _lastSunPathDay = 0;
+    _lastMoonPathDay = 0;
 }
 
 void View3DRenderer::setPositionManager(PositionManager* manager) {
@@ -750,7 +772,7 @@ void View3DRenderer::updateGalaxyProjectedPoints(uint16_t centerX, uint16_t cent
         if (abs(hDiff) >= 24) { _galaxyCache.isValid = false; }
         else if (hDiff > 0) {
             for (int d = 0; d < hDiff; d++) {
-                for (int i = 0; i < 23; i++) _galaxyCache.hourlyPoints[i] = std::move(_galaxyCache.hourlyPoints[i+1]);
+                for (int i = 0; i < 23; i++) std::swap(_galaxyCache.hourlyPoints[i], _galaxyCache.hourlyPoints[i+1]);
                 uint32_t nextTs = (_galaxyCache.cachedBaseHour + 24) * 3600;
                 double lst = _celestialCore->calculateLST(nextTs, lon);
                 _galaxyCache.hourlyPoints[23].clear();
@@ -762,7 +784,7 @@ void View3DRenderer::updateGalaxyProjectedPoints(uint16_t centerX, uint16_t cent
             }
         } else {
             for (int d = 0; d < -hDiff; d++) {
-                for (int i = 23; i > 0; i--) _galaxyCache.hourlyPoints[i] = std::move(_galaxyCache.hourlyPoints[i-1]);
+                for (int i = 23; i > 0; i--) std::swap(_galaxyCache.hourlyPoints[i], _galaxyCache.hourlyPoints[i-1]);
                 _galaxyCache.cachedBaseHour--;
                 uint32_t prevTs = _galaxyCache.cachedBaseHour * 3600;
                 double lst = _celestialCore->calculateLST(prevTs, lon);
@@ -982,37 +1004,40 @@ void View3DRenderer::drawMoonPhase3D(int16_t x, int16_t y, uint8_t size) {
         moonPhaseCache.lastTimestamp = minuteTimestamp;
     }
     
-    // 使用缓存的月相数据
-    
-    // 使用相机的旋转矩阵将真实的日月空间向量转换到屏幕坐标系
-    Point3D rotatedSun = applyCameraRotation(moonPhaseCache.sunVector);
-    Point3D rotatedMoon = applyCameraRotation(moonPhaseCache.moonVector);
-    
-    // 计算在屏幕 2D 投影上的真实朝向 (注意屏幕 Y 轴是朝下的)
-    double screenDx = rotatedSun.x - rotatedMoon.x;
-    double screenDy = -(rotatedSun.y - rotatedMoon.y); 
-    double screenSunAngle = atan2(screenDy, screenDx);
-    
-    // 绘制月相 (逐像素精确绘制)
+    // 1. 获取绝对月相形状参数 k (cosPhaseAngle)
     double k = moonPhaseCache.k;
-    double cosSun = cos(-screenSunAngle);
-    double sinSun = sin(-screenSunAngle);
-    
+
+    // 2. 获取天文学绝对盈亏方向（Waxing 盈月/上弦月 亮右侧 vs Waning 亏月/下弦月 亮左侧）
+    // 通过月球黄经与太阳黄经差判断
+    PositionData position = _positionManager->getPosition();
+    SunPositionData sunPos = _sunCalculator->calculatePosition(currentTimestamp, position.latitude, position.longitude);
+    MoonPositionData moonPos = _moonCalculator->calculatePosition(currentTimestamp, position.latitude, position.longitude);
+    double lDiff = fmod(moonPos.longitude - sunPos.longitude + 360.0, 360.0);
+    bool isWaxing = (lDiff <= 180.0); // 0~180度为盈月( Waxing，右半边亮 )
+
+    // 绘制月相 (逐像素精确渲染天文学月相球体)
     for (int dy = -size; dy <= size; dy++) {
         for (int dx = -size; dx <= size; dx++) {
             if (dx*dx + dy*dy <= size*size) {
-                // 将像素点旋转到太阳在正 X 轴的局部坐标系
-                double rx = dx * cosSun - dy * sinSun;
-                double ry = dx * sinSun + dy * cosSun;
+                double rx = dx;
+                double ry = dy;
                 
                 // 该 Y 切片上的圆边界 X 坐标
                 double bx = sqrt(size*size - ry*ry);
                 
-                // 真正的晨昏圈（terminator）是投影成椭圆的一条弧线
-                if (rx >= k * bx) {
-                    _display->setColor(255, 255, 255); // 亮面 (被太阳照亮)
+                bool isLit = false;
+                if (isWaxing) {
+                    // 盈月（新月 -> 上弦月 -> 满月）：右侧亮。当 rx >= k * bx 时被照亮（满月 k=-1 时 100% 全亮）
+                    isLit = (rx >= k * bx);
                 } else {
-                    _display->setColor(40, 40, 40);    // 暗面 (地球照，深灰色增加立体感)
+                    // 亏月（满月 -> 下弦月 -> 新月）：左侧亮。当 rx <= -k * bx 时被照亮（满月 k=-1 时 100% 全亮）
+                    isLit = (rx <= -k * bx);
+                }
+                
+                if (isLit) {
+                    _display->setColor(_moonLitR, _moonLitG, _moonLitB); // 亮面 (支持天象动态 RGB 颜色)
+                } else {
+                    _display->setColor(40, 40, 40);    // 暗面 (地球照深灰色)
                 }
                 _display->drawPixel(x + dx, y + dy);
             }

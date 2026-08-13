@@ -142,6 +142,7 @@ SunPositionData SunCalculator::calculatePosition(uint32_t timestamp, double lati
     result.altitude = altitude;
     result.ra = rightAscension;
     result.dec = declination;
+    result.longitude = apparentLongitude;
     
     // 只有在需要时才输出详细计算链条
     if (shouldLog) {

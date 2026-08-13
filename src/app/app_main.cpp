@@ -42,6 +42,7 @@ AppMain::AppMain() :
     _celestialCore(nullptr),
     _attitudeEstimator(nullptr),
     _view3DRenderer(nullptr),
+    _eventPredictor(nullptr),
     _uiManager(nullptr),
     _timeMachine(nullptr),
     _userInput(nullptr),
@@ -72,6 +73,9 @@ AppMain::~AppMain() {
     }
     if (_view3DRenderer) {
         delete _view3DRenderer;
+    }
+    if (_eventPredictor) {
+        delete _eventPredictor;
     }
     if (_attitudeEstimator) {
         delete _attitudeEstimator;
@@ -395,6 +399,15 @@ bool AppMain::initCoreModules() {
         }
     } else {
         Serial.println("[APP] View3DRenderer creation skipped - missing dependencies");
+    }
+    
+    // 初始化天象预测器
+    if (_sunCalculator && _moonCalculator && _positionManager) {
+        _eventPredictor = new CelestialEventPredictor(_sunCalculator, _moonCalculator, _positionManager);
+        if (_uiManager && _eventPredictor) {
+            _uiManager->setCelestialEventPredictor(_eventPredictor);
+        }
+        Serial.println("[APP] CelestialEventPredictor initialized successfully");
     }
     
     return true;

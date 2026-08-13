@@ -22,6 +22,7 @@ UIManager::UIManager(HalDisplay* display, HalKeyboard* keyboard, SunCalculator* 
     _gnss(nullptr),
     _timeMachine(nullptr),
     _view3DRenderer(nullptr),
+    _eventPredictor(nullptr),
     _currentPage(PAGE_MAIN),
     _timeMachineActive(false),
     _use3DView(true),
@@ -30,7 +31,9 @@ UIManager::UIManager(HalDisplay* display, HalKeyboard* keyboard, SunCalculator* 
     _editLatitude(39.9042),
     _editAltitude(0.0),
     _selectedField(0),
-    _settingsSelectedField(0) {
+    _settingsSelectedField(0),
+    _showHelpOverlay(false) {
+    strcpy(_timeStepLabel, "5m");
     // 初始化设置菜单输入缓冲区
     for (int i = 0; i < 3; i++) {
         memset(_settingsInputBuffer[i], 0, 32);
@@ -207,6 +210,9 @@ bool UIManager::isUsing3DView() const {
  */
 void UIManager::setPage(UIPage page) {
     _currentPage = page;
+    if (page == PAGE_SETTINGS) {
+        initPositionSettings();
+    }
 }
 
 /**
@@ -229,6 +235,10 @@ void UIManager::setGnss(HalGnss* gnss) {
     _gnss = gnss;
 }
 
+void UIManager::setCelestialEventPredictor(CelestialEventPredictor* predictor) {
+    _eventPredictor = predictor;
+}
+
 /**
  * @brief 初始化位置设置（从当前位置加载）
  */
@@ -240,11 +250,16 @@ void UIManager::initPositionSettings() {
         _editAltitude = pos.altitude;
     } else {
         // 默认值：北京
-        _editLongitude = 116.4074;
-        _editLatitude = 39.9042;
+        _editLongitude = 116.40740;
+        _editLatitude = 39.90420;
         _editAltitude = 0.0;
     }
     _selectedField = 0;
+    _settingsSelectedField = 0;
+
+    sprintf(_settingsInputBuffer[0], "%.5f", _editLongitude);
+    sprintf(_settingsInputBuffer[1], "%.5f", _editLatitude);
+    sprintf(_settingsInputBuffer[2], "%.1f", _editAltitude);
 }
 
 /**
@@ -316,6 +331,14 @@ void UIManager::applyPositionSettings() {
         // 设置手动位置并启用
         _positionManager->setManualPosition(pos);
         _positionManager->enableManualPosition(true);
+        
+        // 关键：重置 3D 轨迹与天象预测缓存，强力触发毫秒级重新计算
+        if (_view3DRenderer) {
+            _view3DRenderer->resetTrajectoryCache();
+        }
+        if (_eventPredictor) {
+            _eventPredictor->resetCache();
+        }
         
         Serial.printf("[UIManager] Applied manual position: %.6f, %.6f, %.1f\n", 
             _editLongitude, _editLatitude, _editAltitude);
@@ -433,6 +456,13 @@ void UIManager::applySettings() {
         _positionManager->setManualPosition(pos);
         _positionManager->enableManualPosition(true);
         
+        if (_view3DRenderer) {
+            _view3DRenderer->resetTrajectoryCache();
+        }
+        if (_eventPredictor) {
+            _eventPredictor->resetCache();
+        }
+        
         Serial.printf("[UIManager] Applied manual position: %.6f, %.6f, %.1f\n", 
             longitude, latitude, altitude);
     }
@@ -546,10 +576,16 @@ void UIManager::drawMainPage() {
             celestialCache.moonAlt = moonPos.altitude;
         }
         
-        // 更新渲染器位置
+        // 更新渲染器位置与月亮亮面渐变色
         if (_view3DRenderer) {
             _view3DRenderer->setSunPosition(celestialCache.sunAz, celestialCache.sunAlt);
             _view3DRenderer->setMoonPosition(celestialCache.moonAz, celestialCache.moonAlt);
+
+            if (_eventPredictor) {
+                CelestialEvent nextEv = _eventPredictor->findNextEvent(timestamp);
+                ColorRGB moonColor = _eventPredictor->getMoonColor(timestamp, nextEv);
+                _view3DRenderer->setMoonLitColor(moonColor.r, moonColor.g, moonColor.b);
+            }
         }
         
         celestialCache.lastTimestamp = timestamp;
@@ -560,6 +596,10 @@ void UIManager::drawMainPage() {
     
     drawIMUDataLabel();
     drawCurrentTime(width - 235, height - 10);
+    
+    if (_showHelpOverlay) {
+        drawHelpOverlay();
+    }
 }
 
 
@@ -1508,40 +1548,32 @@ void UIManager::drawButtonHints(int16_t x, int16_t y, uint16_t width) {
  * @param y Y坐标
  */
 void UIManager::drawCurrentTime(int16_t x, int16_t y) {
-    if (!_positionManager) return;
+    if (!_positionManager || !_display) return;
     
-    // 从位置管理器获取全套本地时间（包含时区带来的日期自动溢出）
+    uint16_t width = _display->getWidth();
+    uint16_t height = _display->getHeight();
+    
+    // 1. 渲染日期和时间 (白色，位于最左下角 X = 6, Y = height - 10)
     TimeData localTime = _positionManager->getLocalTimeData(_positionManager->getTimestamp());
-    
-    // 渲染日期和时间
     _display->setColor(255, 255, 255);
     char dateTimeText[32];
-    // 修正年份 4026 问题：由于 PositionManager::getTimeData 已统一返回 26 格式，此处加 2000 后为 2026
     sprintf(dateTimeText, "%04d/%02d/%02d %02d:%02d", 
             localTime.year + 2000, localTime.month, localTime.day, 
             localTime.hour, localTime.minute);
-    _display->drawText(x, y, dateTimeText, 1);
+    _display->drawText(6, height - 10, dateTimeText, 1);
+
+    // 2. 渲染快进步长倍率 (暖金色，位于最右下角 X = width - 58, Y = height - 10)
+    char stepText[16];
+    sprintf(stepText, "STEP:%s", _timeStepLabel);
+    _display->setColor(255, 215, 50); // 暖金色
+    _display->drawText(width - 58, height - 10, stepText, 1);
 }
 
 /**
  * @brief 绘制IMU传感器数据标签
  */
 void UIManager::drawIMUDataLabel() {
-    float roll = 0.0, pitch = 0.0, yaw = 0.0;
-    float virtualHeading = 0.0;
-    
-    if (_attitudeEstimator) {
-        AttitudeData attitude = _attitudeEstimator->getAttitude();
-        roll = attitude.roll;
-        pitch = attitude.pitch;
-        yaw = attitude.yaw;
-        virtualHeading = _attitudeEstimator->getVirtualHeading();
-    }
-    
-    _display->setColor(143, 200, 170);
     char imuText[32];
-    sprintf(imuText, "R:%+.1f P:%+.1f", roll, pitch);
-    _display->drawText(6, 2, imuText, 1);
     
     // 显示GNSS状态在右上角
     if (_gnss) {
@@ -1564,18 +1596,46 @@ void UIManager::drawIMUDataLabel() {
         
         uint16_t width = _display->getWidth();
         _display->drawText(width - 60, 2, imuText, 1);
-        
-        // --- 新增：显示位置和海拔信息在左侧 ---
+    }
+
+    // --- 经纬度海拔信息在左侧（向上移一行，从 Y=2 开始） ---
+    if (_positionManager) {
         PositionData pos = _positionManager->getPosition();
         _display->setColor(40, 255, 120); // 亮绿色
         sprintf(imuText, "LON:%.5f", pos.longitude);
-        _display->drawText(6, 18, imuText, 1);
+        _display->drawText(6, 2, imuText, 1);
         sprintf(imuText, "LAT:%.5f", pos.latitude);
-        _display->drawText(6, 34, imuText, 1);
+        _display->drawText(6, 18, imuText, 1);
         sprintf(imuText, "ALT:%.1fm", pos.altitude);
-        _display->drawText(6, 50, imuText, 1);
+        _display->drawText(6, 34, imuText, 1);
     }
-    
+
+    // --- 显示未来最近一次发生的天象与时间（向下移一行，从 Y=78 开始） ---
+    if (_eventPredictor && _positionManager) {
+        uint32_t ts = _positionManager->getTimestamp();
+        CelestialEvent nextEv = _eventPredictor->findNextEvent(ts);
+        if (nextEv.type != EVENT_NONE) {
+            if (nextEv.type == EVENT_SUPERMOON) {
+                _display->setColor(255, 215, 50); // 暖金色
+            } else if (nextEv.type == EVENT_BLOOD_MOON) {
+                _display->setColor(255, 100, 100); // 亮血红色
+            } else if (nextEv.type == EVENT_SOLAR_ECLIPSE) {
+                _display->setColor(255, 180, 40); // 耀金色
+            } else if (nextEv.type == EVENT_LUNAR_PARTIAL) {
+                _display->setColor(255, 140, 70); // 暖橙色
+            } else {
+                _display->setColor(200, 200, 200);
+            }
+            sprintf(imuText, "EVT:%-10s", nextEv.name);
+            _display->drawText(6, 78, imuText, 1);
+            _display->setColor(180, 220, 255);
+            _display->drawText(6, 94, nextEv.dateStr, 1);
+        } else {
+            _display->setColor(100, 100, 100);
+            _display->drawText(6, 78, "EVT:NONE       ", 1);
+            _display->drawText(6, 94, "                ", 1);
+        }
+    }
 }
 
 /**
@@ -1885,6 +1945,81 @@ void UIManager::drawTidePage() {
     _display->drawText(graphX, graphY + graphHeight + 6, "-12h", 1);
     //_display->drawText(centerX - 10, graphY + graphHeight + 6, "Now", 1);
     _display->drawText(graphX + graphWidth - 25, graphY + graphHeight + 6, "+12h", 1);
+    
+    if (_showHelpOverlay) {
+        drawHelpOverlay();
+    }
+}
+
+/**
+ * @brief 切换帮助弹窗显示状态
+ */
+void UIManager::toggleHelpOverlay() {
+    _showHelpOverlay = !_showHelpOverlay;
+    if (_currentPage == PAGE_MAIN) {
+        drawMainPage();
+        _display->update();
+    } else if (_currentPage == PAGE_TIDE) {
+        drawTidePage();
+        _display->update();
+    } else {
+        update();
+    }
+}
+
+/**
+ * @brief 绘制按键帮助弹窗
+ */
+void UIManager::drawHelpOverlay() {
+    // 弹窗尺寸与位置（Cardputer 分辨率 240x135）
+    int16_t w = 216;
+    int16_t h = 122;
+    int16_t x = (240 - w) / 2;
+    int16_t y = (135 - h) / 2;
+
+    // 1. 绘制深蓝黑色透明弹窗背景与耀金边框
+    _display->setColor(10, 16, 28);
+    _display->drawRect(x, y, w, h, true);
+    _display->setColor(255, 215, 0); // 耀金色外边框
+    _display->drawRect(x, y, w, h, false);
+    _display->setColor(0, 160, 200); // 冰蓝色内边框
+    _display->drawRect(x + 1, y + 1, w - 2, h - 2, false);
+
+    // 2. 标题
+    _display->setColor(255, 215, 0); // 金黄色
+    _display->drawText(x + 36, y + 4, "KEYBOARD SHORTCUTS", 1);
+    _display->setColor(80, 140, 200);
+    _display->drawText(x + 8, y + 14, "------------------------------", 1);
+
+    // 3. 帮助列表条目
+    struct HelpItem { const char* key; const char* desc; };
+    HelpItem items[] = {
+        {"H/ESC", "Open / Close Help Menu"},
+        {"TAB",   "Switch Sky / Tide Mode"},
+        {"[ / ]", "Time Step (5m~24h)"},
+        {", / .", "Time Travel Adjust (-/+)"},
+        {"C / S", "Settings / GNSS Switch"},
+        {"F / R", "Calibrate / Global Reset"}
+    };
+
+    int16_t itemY = y + 23;
+    for (int i = 0; i < 6; i++) {
+        _display->setColor(255, 240, 100); // 亮黄 Key
+        _display->drawText(x + 8, itemY, items[i].key, 1);
+        _display->setColor(220, 220, 220); // 灰色 Description
+        _display->drawText(x + 56, itemY, items[i].desc, 1);
+        itemY += 15;
+    }
+}
+
+/**
+ * @brief 设置时间步长标签
+ */
+void UIManager::setTimeStepLabel(const char* label) {
+    if (label) {
+        strncpy(_timeStepLabel, label, sizeof(_timeStepLabel) - 1);
+        _timeStepLabel[sizeof(_timeStepLabel) - 1] = '\0';
+    }
 }
 
 

@@ -13,6 +13,7 @@ typedef struct {
     double distance;    // 距离（天文单位）
     double ra;          // 赤经（度）
     double dec;         // 赤纬（度）
+    double longitude;   // 黄经（度）
     uint32_t sunrise;   // 日出时间（UTC秒）
     uint32_t sunset;    // 日落时间（UTC秒）
     uint32_t noon;      // 正午时间（UTC秒）

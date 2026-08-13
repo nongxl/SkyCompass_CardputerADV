@@ -57,7 +57,9 @@ enum Key {
     KEY_COMMA,
     KEY_SLASH,
     KEY_PERIOD,
-    KEY_TAB_KEY
+    KEY_TAB_KEY,
+    KEY_LEFT_BRACKET,
+    KEY_RIGHT_BRACKET
 };
 
 /**

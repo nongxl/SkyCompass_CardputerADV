@@ -99,6 +99,11 @@ private:
      * @param key 按键
      */
     void handlePositionSettingsPageInput(Key key);
+    unsigned long _lastHKeyTime = 0;
+    unsigned long _lastBracketKeyTime = 0;
+    
+    static const int NUM_TIME_STEPS = 6;
+    int _currentTimeStepIndex = 0;
 };
 
 #endif // USER_INPUT_H

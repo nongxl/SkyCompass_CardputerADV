@@ -15,6 +15,7 @@ private:
     uint32_t _lastCheckTime;
     uint32_t _lastChars;
     uint8_t _pinModeIdx;
+    bool _pinLocked;
     
     static const int DEFAULT_RX_PIN = 15;
     static const int DEFAULT_TX_PIN = 13;
@@ -25,7 +26,7 @@ private:
 
 public:
     M5Gnss() : _enabled(false), _newData(false), _isInitialized(false), _isInStandby(false), _gps(nullptr),
-               _lastCheckTime(0), _lastChars(0), _pinModeIdx(0) {
+               _lastCheckTime(0), _lastChars(0), _pinModeIdx(0), _pinLocked(false) {
         _data.latitude = 0.0;
         _data.longitude = 0.0;
         _data.altitude = 0.0;
@@ -87,12 +88,24 @@ public:
             return false;
         }
 
+        // 获取 Serial1 缓冲区中可用的字符数，用来判断是否有真实的串口数据流入
+        int avail = Serial1.available();
+        if (avail > 0) {
+            _gpsChars += avail;
+        }
+
         _gps->updateGPS();
         
         // 自动引脚侦测逻辑
         uint32_t currentMillis = millis();
         if (currentMillis - _lastCheckTime > 5000) {
-            if (_gpsChars == _lastChars && !_isInStandby) {
+            if (_gpsChars > _lastChars) {
+                // 有收到数据，锁定当前引脚，不再轮询
+                if (!_pinLocked) {
+                    _pinLocked = true;
+                    Serial.println("[GNSS] Data detected. Pin locked permanently.");
+                }
+            } else if (!_pinLocked && !_isInStandby) {
                 // 没有收到数据，切换引脚
                 _pinModeIdx = (_pinModeIdx + 1) % 3;
                 if (_pinModeIdx == 0) {

@@ -13,6 +13,8 @@ typedef struct {
     double distance;    // 距离（天文单位）
     double ra;          // 赤经（度）
     double dec;         // 赤纬（度）
+    double eclipticLat; // 黄纬（度）
+    double longitude;   // 黄经（度）
 } MoonPositionData;
 
 /**

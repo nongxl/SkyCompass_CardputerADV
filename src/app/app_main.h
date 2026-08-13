@@ -13,6 +13,7 @@
 #include "core/attitude_estimator.h"
 #include "core/ui_manager.h"
 #include "core/view_3d_renderer.h"
+#include "core/celestial_event_predictor.h"
 #include "time_machine.h"
 #include "user_input.h"
 
@@ -32,6 +33,7 @@ private:
     CelestialCore* _celestialCore;
     AttitudeEstimator* _attitudeEstimator;
     View3DRenderer* _view3DRenderer;
+    CelestialEventPredictor* _eventPredictor;
     UIManager* _uiManager;
     TimeMachine* _timeMachine;
     UserInput* _userInput;

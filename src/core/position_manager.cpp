@@ -52,18 +52,23 @@ bool PositionManager::begin() {
         _position.latitude = lat;
         _position.longitude = lon;
         _position.altitude = _preferences.getDouble("alt", 0.0);
+        _manualPosition = _position;
+        _useManualPosition = true; // 关键：开机即启用 NVS 缓存位置
         Serial.printf("[PositionManager] Loaded position from NVS: %.6f, %.6f\n", _position.latitude, _position.longitude);
     } else {
         _position = getDefaultPosition();
+        _manualPosition = _position;
+        _useManualPosition = true; // 关键：无 NVS 时默认启用默认位置（北京）
         _preferences.putDouble("lat", _position.latitude);
         _preferences.putDouble("lon", _position.longitude);
         _preferences.putDouble("alt", _position.altitude);
         Serial.printf("[PositionManager] Initialized default position to NVS: %.6f, %.6f\n", _position.latitude, _position.longitude);
     }
 
-    // 从 NVS 加载时间数据
+    // 从 NVS 加载时间数据（增加 time_ver 版本控制，自动清除历史 7月旧数据）
+    uint8_t timeVer = _preferences.getUChar("time_ver", 0);
     uint16_t year = _preferences.getUShort("year", 0);
-    if (year != 0) {
+    if (year != 0 && timeVer >= 2) {
         _time.year = year;
         _time.month = _preferences.getUChar("month", 0);
         _time.day = _preferences.getUChar("day", 0);
@@ -72,14 +77,15 @@ bool PositionManager::begin() {
         _time.second = _preferences.getUChar("second", 0);
         Serial.printf("[PositionManager] Loaded time from NVS: %04d-%02d-%02d %02d:%02d:%02d\n", _time.year + 2000, _time.month, _time.day, _time.hour, _time.minute, _time.second);
     } else {
-        _time = getDefaultTime();
+        _time = getDefaultTime(); // 2026-08-14 00:00:00
+        _preferences.putUChar("time_ver", 2);
         _preferences.putUShort("year", _time.year);
         _preferences.putUChar("month", _time.month);
         _preferences.putUChar("day", _time.day);
         _preferences.putUChar("hour", _time.hour);
         _preferences.putUChar("minute", _time.minute);
         _preferences.putUChar("second", _time.second);
-        Serial.printf("[PositionManager] Initialized default time to NVS: %04d-%02d-%02d %02d:%02d:%02d\n", _time.year + 2000, _time.month, _time.day, _time.hour, _time.minute, _time.second);
+        Serial.printf("[PositionManager] Reset default time to NVS: %04d-%02d-%02d %02d:%02d:%02d\n", _time.year + 2000, _time.month, _time.day, _time.hour, _time.minute, _time.second);
     }
 
     // 初始化GNSS模块（如果存在）
@@ -271,6 +277,11 @@ void PositionManager::enableManualTime(bool enable) {
  */
 void PositionManager::setManualPosition(PositionData position) {
     _manualPosition = position;
+    _position = position;
+    _preferences.putDouble("lat", _position.latitude);
+    _preferences.putDouble("lon", _position.longitude);
+    _preferences.putDouble("alt", _position.altitude);
+    Serial.printf("[PositionManager] Manual position saved to NVS: lat=%.6f, lon=%.6f, alt=%.1f\n", _position.latitude, _position.longitude, _position.altitude);
 }
 
 /**
@@ -446,9 +457,9 @@ uint32_t PositionManager::calculateTimestamp(TimeData time) {
 TimeData PositionManager::getDefaultTime() {
     TimeData defaultTime;
     defaultTime.year = 26; // 2026年
-    defaultTime.month = 7;
-    defaultTime.day = 14;
-    defaultTime.hour = 14; // 本地时间22:00 = UTC 14:00
+    defaultTime.month = 8; // 8月
+    defaultTime.day = 13;  // 13日
+    defaultTime.hour = 16; // 本地时间2026-08-14 00:00 = UTC 16:00
     defaultTime.minute = 0;
     defaultTime.second = 0;
     return defaultTime;

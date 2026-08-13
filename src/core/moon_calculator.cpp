@@ -99,8 +99,10 @@ MoonPositionData MoonCalculator::calculatePosition(uint32_t timestamp, double la
     double distance = (385000.0 / 6378.1) * (1 - e * e) / (1 + e * cos(trueAnomaly * DEG_TO_RAD));
     result.distance = distance / 23455.0; // 转换为天文单位
     
-    // 计算月亮的纬度
+    // 计算月亮的纬度（黄纬）
     double moonLatitude = asin(sin((trueLongitude - N) * DEG_TO_RAD) * sin(i * DEG_TO_RAD)) * RAD_TO_DEG;
+    result.eclipticLat = moonLatitude;
+    result.longitude = trueLongitude;
     
     // 计算月亮的视经度
     double apparentLongitude = trueLongitude - 0.00569 - 0.00478 * sin((125.04 - 1934.136 * jc) * DEG_TO_RAD);

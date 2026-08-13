@@ -11,6 +11,7 @@
 #include "attitude_estimator.h"
 #include "position_manager.h"
 #include "view_3d_renderer.h"
+#include "celestial_event_predictor.h"
 
 // 前向声明
 class TimeMachine;
@@ -109,6 +110,7 @@ private:
     HalGnss* _gnss;                // GNSS模块指针
     TimeMachine* _timeMachine;     // 时间机器模块指针
     View3DRenderer* _view3DRenderer; // 3D视图渲染器指针
+    CelestialEventPredictor* _eventPredictor; // 天象预测器指针
     UIPage _currentPage;           // 当前页面
     bool _timeMachineActive;        // 时间机器是否激活
     bool _use3DView;               // 是否使用3D视图模式
@@ -181,12 +183,8 @@ public:
      * @param timeMachine 时间机器模块指针
      */
     void setTimeMachine(TimeMachine* timeMachine);
-    
-    /**
-     * @brief 设置GNSS模块指针
-     * @param gnss GNSS模块指针
-     */
     void setGnss(HalGnss* gnss);
+    void setCelestialEventPredictor(CelestialEventPredictor* predictor);
     
     /**
      * @brief 立即重绘主页面
@@ -228,6 +226,12 @@ public:
     bool isUsing3DView() const;
 
     /**
+     * @brief 设置时间步长标签
+     * @param label 步长标签（如 "5m", "1h", "24h"）
+     */
+    void setTimeStepLabel(const char* label);
+
+    /**
      * @brief 初始化位置设置（从当前位置加载）
      */
     void initPositionSettings();
@@ -260,6 +264,21 @@ public:
      * @brief 选择下一个字段
      */
     void selectNextField();
+
+    /**
+     * @brief 切换帮助弹窗显示状态
+     */
+    void toggleHelpOverlay();
+
+    /**
+     * @brief 获取帮助弹窗是否显示
+     */
+    bool isHelpOverlayVisible() const { return _showHelpOverlay; }
+
+    /**
+     * @brief 设置帮助弹窗显示状态
+     */
+    void setHelpOverlayVisible(bool visible) { _showHelpOverlay = visible; }
 
     /**
      * @brief 选择上一个字段
@@ -477,6 +496,14 @@ private:
      * @brief 绘制IMU传感器数据标签
      */
     void drawIMUDataLabel();
+    
+    /**
+     * @brief 绘制按键帮助弹窗
+     */
+    void drawHelpOverlay();
+    
+    bool _showHelpOverlay;
+    char _timeStepLabel[16];
     
     /**
      * @brief 调整时间

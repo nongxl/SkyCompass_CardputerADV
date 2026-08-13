@@ -105,8 +105,17 @@ public:
         if (M5Cardputer.Keyboard.isKeyPressed('/')) {
             return KEY_SLASH;
         }
+        if (M5Cardputer.Keyboard.isKeyPressed('[')) {
+            return KEY_LEFT_BRACKET;
+        }
+        if (M5Cardputer.Keyboard.isKeyPressed(']')) {
+            return KEY_RIGHT_BRACKET;
+        }
         if (M5Cardputer.Keyboard.isKeyPressed('c') || M5Cardputer.Keyboard.isKeyPressed('C')) {
             return KEY_C;
+        }
+        if (M5Cardputer.Keyboard.isKeyPressed('h') || M5Cardputer.Keyboard.isKeyPressed('H')) {
+            return KEY_H;
         }
         if (M5Cardputer.Keyboard.isKeyPressed('s') || M5Cardputer.Keyboard.isKeyPressed('S')) {
             return KEY_S;

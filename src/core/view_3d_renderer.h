@@ -93,6 +93,9 @@ public:
     void setPositionManager(PositionManager* manager);
     void setTimeMachine(TimeMachine* timeMachine);
     
+    // 设置月亮亮面动态颜色（RGB）
+    void setMoonLitColor(uint8_t r, uint8_t g, uint8_t b);
+    
     // 绘制月相（供UIManager在潮汐页面使用）
     void drawMoonPhase3D(int16_t x, int16_t y, uint8_t size);
     
@@ -101,6 +104,9 @@ public:
     
     // 获取缓存的月亮位置（供潮汐模式使用）
     bool getCachedMoonPosition(uint32_t timestamp, double& azimuth, double& altitude);
+    
+    // 重置 3D 轨迹缓存（在位置改变时强制重新计算轨迹）
+    void resetTrajectoryCache();
     
     // 移除toggleViewMode方法，只使用3D模式
 
@@ -185,6 +191,11 @@ private:
     
     // 旋转矩阵预计算缓存 (每帧更新一次)
     float _cosR, _sinR, _cosP, _sinP, _cosY, _sinY;
+    
+    // 月亮亮面动态颜色
+    uint8_t _moonLitR;
+    uint8_t _moonLitG;
+    uint8_t _moonLitB;
     
     void render3D(uint16_t centerX, uint16_t centerY, uint16_t radius);
     

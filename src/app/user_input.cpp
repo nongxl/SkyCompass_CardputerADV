@@ -1,6 +1,9 @@
 #include "user_input.h"
 #include <M5Cardputer.h>
 
+static const int TIME_STEP_SECONDS[6] = {300, 3600, 10800, 21600, 43200, 86400};
+static const char* TIME_STEP_NAMES[6] = {"5m", "1h", "3h", "6h", "12h", "24h"};
+
 /**
  * @brief 构造函数
  * @param keyboard 键盘模块指针
@@ -91,6 +94,49 @@ void UserInput::processInput() {
         if (!isTimeKey) _lastKeyTime = currentTime;
         
         UIPage currentPage = _uiManager->getCurrentPage();
+
+        // 全局 H 键 / ESC 键控制帮助菜单弹窗
+        if (key == KEY_H || key == KEY_ESC) {
+            if (currentTime - _lastHKeyTime >= _functionKeyDelay) {
+                _lastHKeyTime = currentTime;
+                _uiManager->toggleHelpOverlay();
+                if (currentPage == PAGE_MAIN) {
+                    _uiManager->redrawMainPage();
+                } else if (currentPage == PAGE_TIDE) {
+                    _uiManager->redrawTidePage();
+                }
+            }
+            return;
+        }
+
+        // 全局 [ 键与 ] 键切换时间倍率/步长挡位 (5m, 1h, 3h, 6h, 12h, 24h)
+        if (key == KEY_LEFT_BRACKET || key == KEY_RIGHT_BRACKET) {
+            if (currentTime - _lastBracketKeyTime >= _functionKeyDelay) {
+                _lastBracketKeyTime = currentTime;
+                if (key == KEY_LEFT_BRACKET) {
+                    _currentTimeStepIndex = (_currentTimeStepIndex - 1 + 6) % 6;
+                } else {
+                    _currentTimeStepIndex = (_currentTimeStepIndex + 1) % 6;
+                }
+                _uiManager->setTimeStepLabel(TIME_STEP_NAMES[_currentTimeStepIndex]);
+                if (currentPage == PAGE_MAIN) {
+                    _uiManager->redrawMainPage();
+                } else if (currentPage == PAGE_TIDE) {
+                    _uiManager->redrawTidePage();
+                }
+            }
+            return;
+        }
+
+        // 如果帮助弹窗处于打开状态，任意按键均关闭帮助遮罩
+        if (_uiManager->isHelpOverlayVisible()) {
+            if (currentTime - _lastHKeyTime >= _functionKeyDelay) {
+                _lastHKeyTime = currentTime;
+                _uiManager->setHelpOverlayVisible(false);
+                _uiManager->redrawMainPage();
+            }
+            return;
+        }
 
         // 全局 R 键重置逻辑
         if (key == KEY_R) {
@@ -198,15 +244,13 @@ void UserInput::handleMainPageInput(Key key) {
             break;
         case KEY_COMMA: // 逗号键（左）减少时间
             if (currentTime - _lastStepTime >= _stepRepeatDelay) {
-                // 首发延迟逻辑：第一次按下立即触发，后续触发需满足长按时间阈值
                 bool isFirstPress = (currentTime - _lastStepTime > 400);
                 bool isLongPress = (currentTime - _keyPressStartTime > 400);
-                
-                if (!isFirstPress && !isLongPress) break; // 处于首发后的等待期，防止短按误触发
+                if (!isFirstPress && !isLongPress) break;
 
-                int32_t step = isLongPress ? -900 : -1800; // 长按 15min，短按 30min
+                int32_t stepSec = TIME_STEP_SECONDS[_currentTimeStepIndex];
                 _lastStepTime = currentTime;
-                _timeMachine->adjustTime(step);
+                _timeMachine->adjustTime(-stepSec);
                 
                 if (_uiManager->getCurrentPage() == PAGE_MAIN) {
                     _uiManager->redrawMainPage();
@@ -215,17 +259,16 @@ void UserInput::handleMainPageInput(Key key) {
                 }
             }
             break;
-        case KEY_SLASH: // 斜杠键（右）增加时间
+        case KEY_SLASH:  // 斜杠键（右）增加时间
+        case KEY_PERIOD: // 句点键（右）增加时间
             if (currentTime - _lastStepTime >= _stepRepeatDelay) {
-                // 首发延迟逻辑
                 bool isFirstPress = (currentTime - _lastStepTime > 400);
                 bool isLongPress = (currentTime - _keyPressStartTime > 400);
-                
                 if (!isFirstPress && !isLongPress) break;
 
-                int32_t step = isLongPress ? 900 : 1800;
+                int32_t stepSec = TIME_STEP_SECONDS[_currentTimeStepIndex];
                 _lastStepTime = currentTime;
-                _timeMachine->adjustTime(step);
+                _timeMachine->adjustTime(stepSec);
                 
                 if (_uiManager->getCurrentPage() == PAGE_MAIN) {
                     _uiManager->redrawMainPage();
