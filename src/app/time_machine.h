@@ -13,6 +13,12 @@ private:
     TimeData _targetTime;              // 目标时间
     bool _isActive;                    // 是否激活
     uint8_t _selectedField;            // 当前选中的时间字段（0:年, 1:月, 2:日, 3:时, 4:分, 5:秒）
+    uint32_t _displayTimestamp;        // 当前动画插值显示中的本地时间戳
+    uint32_t _targetTimestamp;         // 动画目标本地时间戳
+    uint32_t _animStartTimestamp;      // 本次插值起点的本地时间戳
+    uint32_t _animStartMillis;         // 本次插值开始的系统毫秒数
+    uint32_t _animDurationMs;          // 本次插值持续时间（毫秒）
+    bool _isAnimating;                 // 是否正在进行线性时间插值动画
 
 public:
     /**
@@ -98,6 +104,17 @@ public:
      * @param seconds 调整的秒数（正数增加，负数减少）
      */
     void adjustTime(int seconds);
+
+    /**
+     * @brief 推进时间机器的线性插值动画
+     * @return 如果本帧更新了插值时间并需要重绘，返回 true
+     */
+    bool update();
+
+    /**
+     * @brief 是否正在进行线性插值动画
+     */
+    bool isAnimating() const;
 
 private:
     /**

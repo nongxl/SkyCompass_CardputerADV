@@ -167,12 +167,15 @@ private:
     TrajectoryCache _sunTrajectoryCache;
     TrajectoryCache _moonTrajectoryCache;
     
-    // 银河24小时缓存
+    // 银河24小时按需槽位缓存
     struct GalaxyCache {
         std::vector<Point3D> hourlyPoints[24]; // 每小时的银河粒子位置
-        uint32_t cachedBaseHour;               // 缓存对应的 UTC 起始小时（startOfDay/3600）
+        uint32_t slotHour[24];                 // 每个槽位当前缓存的 UTC 小时
+        uint32_t cachedBaseHour;               // 保留字段
         bool isValid;                          // 缓存是否有效
     };
+
+    void updateTrajectoryCache(TrajectoryCache& cache, uint32_t windowStartBlock, double lat, double lon, CelestialBodyType type);
     
     GalaxyCache _galaxyCache;
     

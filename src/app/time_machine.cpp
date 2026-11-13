@@ -4,10 +4,19 @@
  * @brief 构造函数
  * @param positionManager 位置和时间管理器指针
  */
+static const uint32_t MIN_TIME_TS = 946684800UL;  // 2000-01-01 00:00:00
+static const uint32_t MAX_TIME_TS = 4102444800UL; // 2100-01-01 00:00:00
+
 TimeMachine::TimeMachine(PositionManager* positionManager) : 
     _positionManager(positionManager),
     _isActive(false),
-    _selectedField(0) {
+    _selectedField(0),
+    _displayTimestamp(0),
+    _targetTimestamp(0),
+    _animStartTimestamp(0),
+    _animStartMillis(0),
+    _animDurationMs(0),
+    _isAnimating(false) {
     // 初始化目标时间为当前时间
     _targetTime = _positionManager->getTime();
 }
@@ -26,33 +35,23 @@ bool TimeMachine::begin() {
  */
 void TimeMachine::activate() {
     _isActive = true;
-    // 保存当前时间作为目标时间
-    _targetTime = _positionManager->getTime();
+    // 保存当前本地时间作为目标时间（与 PositionManager::getTimestamp 的手动时间本地时区约定一致）
+    _targetTime = _positionManager->getLocalTimeData(_positionManager->getTimestamp());
+
+    // 检查时间是否有效，如果无效则使用默认时间转换后的本地时间
+    if (_targetTime.year == 0 || _targetTime.month == 0 || _targetTime.day == 0 || _targetTime.year > 100) {
+        _targetTime = PositionManager::getDefaultTime();
+        Serial.println("[DEBUG] TimeMachine: Using default time fallback");
+    }
     
-        // 检查时间是否有效，如果无效则使用默认本地时间（2026年8月14日 00:00）
-        if (_targetTime.year == 0 || _targetTime.month == 0 || _targetTime.day == 0 || _targetTime.year > 100) {
-            _targetTime = PositionManager::getDefaultTime();
-            
-            // 计算时区偏移（根据经度计算，每15度对应1小时）
-            PositionData pos = _positionManager->getPosition();
-            double timezone = pos.longitude / 15.0;
-            
-            // 将本地时间转换为UTC时间
-            int32_t timezoneOffset = (int32_t)(timezone * 3600);
-            int64_t localTimestamp = (int64_t)_targetTime.hour * 3600LL + _targetTime.minute * 60LL + _targetTime.second - timezoneOffset;
-            
-            // 处理跨天情况
-            int8_t utcHour = (localTimestamp / 3600) % 24;
-            if (utcHour < 0) utcHour += 24;
-            int8_t utcMinute = (localTimestamp % 3600) / 60;
-            if (utcMinute < 0) utcMinute += 60;
-            
-            _targetTime.hour = utcHour;
-            _targetTime.minute = utcMinute;
-            
-            Serial.println("[DEBUG] TimeMachine: Using default local time (2026-08-14 00:00:00)");
-        }
-    
+    // 初始化线性插值状态
+    _targetTimestamp = PositionManager::calculateTimestamp(_targetTime);
+    _displayTimestamp = _targetTimestamp;
+    _animStartTimestamp = _targetTimestamp;
+    _animStartMillis = millis();
+    _animDurationMs = 0;
+    _isAnimating = false;
+
     // 设置手动时间
     _positionManager->setManualTime(_targetTime);
     // 启用手动时间
@@ -69,6 +68,7 @@ void TimeMachine::activate() {
  */
 void TimeMachine::deactivate() {
     _isActive = false;
+    _isAnimating = false;
     // 禁用手动时间
     _positionManager->enableManualTime(false);
 }
@@ -355,6 +355,9 @@ uint8_t TimeMachine::getSelectedField() {
  * @brief 应用目标时间（更新到位置和时间管理器）
  */
 void TimeMachine::applyTime() {
+    _targetTimestamp = PositionManager::calculateTimestamp(_targetTime);
+    _displayTimestamp = _targetTimestamp;
+    _isAnimating = false;
     _positionManager->setManualTime(_targetTime);
 }
 
@@ -362,15 +365,14 @@ void TimeMachine::applyTime() {
  * @brief 重置为当前时间
  */
 void TimeMachine::resetToCurrentTime() {
-    // 获取当前时间
-    TimeData currentTime = _positionManager->getTime();
-    // 禁用手动时间以获取真实的当前时间
+    // 禁用手动时间以获取真实的当前本地时间
     _positionManager->enableManualTime(false);
-    currentTime = _positionManager->getTime();
+    _targetTime = _positionManager->getLocalTimeData(_positionManager->getTimestamp());
+    _targetTimestamp = PositionManager::calculateTimestamp(_targetTime);
+    _displayTimestamp = _targetTimestamp;
+    _isAnimating = false;
     // 重新启用手动时间
     _positionManager->enableManualTime(true);
-    // 设置目标时间为当前时间
-    _targetTime = currentTime;
     // 应用目标时间
     _positionManager->setManualTime(_targetTime);
 }
@@ -384,67 +386,64 @@ void TimeMachine::adjustTime(int seconds) {
     if (!_isActive) {
         activate();
     }
-    
-    // 计算总秒数并调整时间
-    int totalSeconds = _targetTime.hour * 3600 + _targetTime.minute * 60 + _targetTime.second;
-    totalSeconds += seconds;
-    
-    // 处理总秒数，确保在合理范围内
-    int daysToAdd = 0;
-    while (totalSeconds < 0) {
-        totalSeconds += 86400; // 加上一天的秒数
-        daysToAdd--; // 减去一天
+
+    // 计算目标时间戳并限制在 [2000, 2100] 年范围内
+    int64_t nextTs = (int64_t)_targetTimestamp + (int64_t)seconds;
+    if (nextTs < (int64_t)MIN_TIME_TS) nextTs = MIN_TIME_TS;
+    if (nextTs > (int64_t)MAX_TIME_TS) nextTs = MAX_TIME_TS;
+    _targetTimestamp = (uint32_t)nextTs;
+    _targetTime = PositionManager::getTimeData(_targetTimestamp);
+
+    // 从当前已显示的时间戳出发，启动线性插值动画，使天体轨迹平稳转动而非瞬间跳变
+    int64_t diff = (int64_t)_targetTimestamp - (int64_t)_displayTimestamp;
+    uint32_t absDiff = (diff >= 0) ? (uint32_t)diff : (uint32_t)(-diff);
+
+    if (absDiff == 0) {
+        _isAnimating = false;
+        return;
     }
-    while (totalSeconds >= 86400) {
-        totalSeconds -= 86400; // 减去一天的秒数
-        daysToAdd++; // 加上一天
+
+    _animStartTimestamp = _displayTimestamp;
+    _animStartMillis = millis();
+    if (absDiff <= 300) {
+        _animDurationMs = 120;
+    } else if (absDiff <= 3600) {
+        _animDurationMs = 280;
+    } else {
+        _animDurationMs = 450;
     }
-    
-    // 转换为时分秒
-    int hours = totalSeconds / 3600;
-    int minutes = (totalSeconds % 3600) / 60;
-    int secs = totalSeconds % 60;
-    
-    // 设置时分秒
-    _targetTime.hour = hours;
-    _targetTime.minute = minutes;
-    _targetTime.second = secs;
-    
-    // 处理日期溢出
-    if (daysToAdd != 0) {
-        _targetTime.day += daysToAdd;
-        // 处理日期溢出
-        uint16_t fullYear = 2000 + _targetTime.year;
-        uint8_t daysInMonth = getDaysInMonth(fullYear, _targetTime.month);
-        
-        while (_targetTime.day > daysInMonth) {
-            _targetTime.day -= daysInMonth;
-            _targetTime.month++;
-            if (_targetTime.month > 12) {
-                _targetTime.month = 1;
-                _targetTime.year++;
-            }
-            fullYear = 2000 + _targetTime.year;
-            daysInMonth = getDaysInMonth(fullYear, _targetTime.month);
-        }
-        
-        while (_targetTime.day < 1) {
-            _targetTime.month--;
-            if (_targetTime.month < 1) {
-                _targetTime.month = 12;
-                _targetTime.year--;
-                if (_targetTime.year < 0) {
-                    _targetTime.year = 0;
-                }
-            }
-            fullYear = 2000 + _targetTime.year;
-            daysInMonth = getDaysInMonth(fullYear, _targetTime.month);
-            _targetTime.day += daysInMonth;
-        }
+    _isAnimating = true;
+}
+
+/**
+ * @brief 推进时间机器的线性插值动画
+ * @return 如果本帧更新了插值时间并需要重绘，返回 true
+ */
+bool TimeMachine::update() {
+    if (!_isActive || !_isAnimating) {
+        return false;
     }
-    
-    // 应用目标时间
-    _positionManager->setManualTime(_targetTime);
+
+    uint32_t now = millis();
+    uint32_t elapsed = now - _animStartMillis;
+    if (_animDurationMs == 0 || elapsed >= _animDurationMs) {
+        _displayTimestamp = _targetTimestamp;
+        _isAnimating = false;
+    } else {
+        double t = (double)elapsed / (double)_animDurationMs;
+        int64_t delta = (int64_t)_targetTimestamp - (int64_t)_animStartTimestamp;
+        _displayTimestamp = (uint32_t)((int64_t)_animStartTimestamp + (int64_t)(delta * t));
+    }
+
+    _positionManager->setManualTime(PositionManager::getTimeData(_displayTimestamp));
+    return true;
+}
+
+/**
+ * @brief 是否正在进行线性插值动画
+ */
+bool TimeMachine::isAnimating() const {
+    return _isAnimating;
 }
 
 /**

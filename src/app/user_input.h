@@ -95,14 +95,21 @@ private:
     void handleMenuPageInput(Key key);
     
     /**
+     * @brief 带长按阶梯加速的时间调节
+     * @param direction 方向（-1 回退，+1 前进）
+     */
+    void adjustTimeWithAcceleration(int direction);
+
+    /**
      * @brief 处理位置设置页面的输入
      * @param key 按键
      */
     void handlePositionSettingsPageInput(Key key);
     unsigned long _lastHKeyTime = 0;
     unsigned long _lastBracketKeyTime = 0;
+    unsigned long _lastOkKeyTime = 0;
     
-    static const int NUM_TIME_STEPS = 6;
+    static const int NUM_TIME_STEPS = 8;
     int _currentTimeStepIndex = 0;
 };
 

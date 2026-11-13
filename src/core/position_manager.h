@@ -40,6 +40,7 @@ private:
     bool _defaultTimeLogged; // 是否已经输出过默认时间日志
     Preferences _preferences; // NVS缓存
     uint32_t _lastSaveTime; // 上次保存到NVS的时间
+    uint32_t _lastTickMillis; // 上次本地走时基准毫秒数
 
 
 public:
@@ -92,6 +93,11 @@ public:
     void enableManualTime(bool enable);
 
     /**
+     * @brief 将当前时间（含手动调节后的时间）作为系统基准时间持久化到 NVS，并恢复走时
+     */
+    void saveCurrentTimeToNvs();
+
+    /**
      * @brief 设置手动位置
      * @param position 手动设置的位置数据
      */
@@ -120,7 +126,14 @@ public:
      * @param timestamp UTC时间戳（秒）
      * @return 时间数据结构体
      */
-    TimeData getTimeData(uint32_t timestamp);
+    static TimeData getTimeData(uint32_t timestamp);
+
+    /**
+     * @brief 计算时间戳
+     * @param time 时间数据结构体
+     * @return UTC时间戳（秒）
+     */
+    static uint32_t calculateTimestamp(TimeData time);
     
     /**
      * @brief 将时间戳转换为本地时间数据结构体（根据经度计算时区）
@@ -149,11 +162,14 @@ private:
     void updateFromGnss(GnssData gnssData);
 
     /**
-     * @brief 计算时间戳
-     * @param time 时间数据结构体
-     * @return UTC时间戳（秒）
+     * @brief 检查时间结构体字段是否在有效范围内
      */
-    uint32_t calculateTimestamp(TimeData time);
+    static bool isValidTimeData(const TimeData& time);
+
+    /**
+     * @brief 将 UTC 时间写入 NVS
+     */
+    void saveTimeToNvs(const TimeData& utcTime);
 };
 
 #endif // POSITION_MANAGER_H

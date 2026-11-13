@@ -72,13 +72,19 @@ void UIManager::update() {
     if (_attitudeEstimator) {
         attitudeUpdated = _attitudeEstimator->update();
     }
+
+    // 推进时间机器的线性插值动画
+    bool timeAnimating = false;
+    if (_timeMachine) {
+        timeAnimating = _timeMachine->update();
+    }
     
     // 根据当前页面绘制不同的内容
     switch (_currentPage) {
         case PAGE_MAIN:
-            // 姿态数据更新时重绘，或者每秒强制重绘一次（确保时间显示正确）
+            // 姿态数据更新、时间插值动画中，或者每秒强制重绘一次（确保时间显示正确）
             static uint32_t lastForceRenderTime = 0;
-            if (attitudeUpdated || (currentTime - lastForceRenderTime > 1000)) {
+            if (attitudeUpdated || timeAnimating || (currentTime - lastForceRenderTime > 1000)) {
                 drawMainPage();
                 _display->update();
                 lastForceRenderTime = currentTime;
@@ -101,9 +107,9 @@ void UIManager::update() {
             _display->update();
             break;
         case PAGE_TIDE:
-            // 潮汐模式：每秒重绘一次（确保时间显示正确）
+            // 潮汐模式：时间插值动画中或每秒重绘一次（确保时间显示正确）
             static uint32_t lastTideRenderTime = 0;
-            if (currentTime - lastTideRenderTime > 1000) {
+            if (timeAnimating || (currentTime - lastTideRenderTime > 1000)) {
                 drawTidePage();
                 _display->update();
                 lastTideRenderTime = currentTime;
@@ -581,7 +587,7 @@ void UIManager::drawMainPage() {
             _view3DRenderer->setSunPosition(celestialCache.sunAz, celestialCache.sunAlt);
             _view3DRenderer->setMoonPosition(celestialCache.moonAz, celestialCache.moonAlt);
 
-            if (_eventPredictor) {
+            if (_eventPredictor && !(_timeMachine && _timeMachine->isAnimating())) {
                 CelestialEvent nextEv = _eventPredictor->findNextEvent(timestamp);
                 ColorRGB moonColor = _eventPredictor->getMoonColor(timestamp, nextEv);
                 _view3DRenderer->setMoonLitColor(moonColor.r, moonColor.g, moonColor.b);
@@ -1996,7 +2002,7 @@ void UIManager::drawHelpOverlay() {
     HelpItem items[] = {
         {"H/ESC", "Open / Close Help Menu"},
         {"TAB",   "Switch Sky / Tide Mode"},
-        {"[ / ]", "Time Step (5m~24h)"},
+        {"[ / ]", "Time Step (5m~30d)"},
         {", / .", "Time Travel Adjust (-/+)"},
         {"C / S", "Settings / GNSS Switch"},
         {"F / R", "Calibrate / Global Reset"}

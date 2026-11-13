@@ -9,7 +9,8 @@ PositionManager::PositionManager(HalGnss* gnss) :
     _useManualTime(false),
     _useManualPosition(false),
     _defaultTimeLogged(false),
-    _lastSaveTime(0) {
+    _lastSaveTime(0),
+    _lastTickMillis(0) {
     // 初始化位置数据
     _position.latitude = 0.0;
     _position.longitude = 0.0;
@@ -65,28 +66,37 @@ bool PositionManager::begin() {
         Serial.printf("[PositionManager] Initialized default position to NVS: %.6f, %.6f\n", _position.latitude, _position.longitude);
     }
 
-    // 从 NVS 加载时间数据（增加 time_ver 版本控制，自动清除历史 7月旧数据）
+    // 从 NVS 加载时间数据；若 NVS 缓存时间早于当前固件编译时间，则自动刷新为编译期默认时间
     uint8_t timeVer = _preferences.getUChar("time_ver", 0);
     uint16_t year = _preferences.getUShort("year", 0);
+    TimeData defaultTime = getDefaultTime();
+    bool loadedFromNvs = false;
+
     if (year != 0 && timeVer >= 2) {
-        _time.year = year;
-        _time.month = _preferences.getUChar("month", 0);
-        _time.day = _preferences.getUChar("day", 0);
-        _time.hour = _preferences.getUChar("hour", 0);
-        _time.minute = _preferences.getUChar("minute", 0);
-        _time.second = _preferences.getUChar("second", 0);
-        Serial.printf("[PositionManager] Loaded time from NVS: %04d-%02d-%02d %02d:%02d:%02d\n", _time.year + 2000, _time.month, _time.day, _time.hour, _time.minute, _time.second);
-    } else {
-        _time = getDefaultTime(); // 2026-08-14 00:00:00
-        _preferences.putUChar("time_ver", 2);
-        _preferences.putUShort("year", _time.year);
-        _preferences.putUChar("month", _time.month);
-        _preferences.putUChar("day", _time.day);
-        _preferences.putUChar("hour", _time.hour);
-        _preferences.putUChar("minute", _time.minute);
-        _preferences.putUChar("second", _time.second);
-        Serial.printf("[PositionManager] Reset default time to NVS: %04d-%02d-%02d %02d:%02d:%02d\n", _time.year + 2000, _time.month, _time.day, _time.hour, _time.minute, _time.second);
+        TimeData nvsTime;
+        nvsTime.year = year;
+        nvsTime.month = _preferences.getUChar("month", 0);
+        nvsTime.day = _preferences.getUChar("day", 0);
+        nvsTime.hour = _preferences.getUChar("hour", 0);
+        nvsTime.minute = _preferences.getUChar("minute", 0);
+        nvsTime.second = _preferences.getUChar("second", 0);
+
+        if (isValidTimeData(nvsTime) && calculateTimestamp(nvsTime) >= calculateTimestamp(defaultTime)) {
+            _time = nvsTime;
+            loadedFromNvs = true;
+            Serial.printf("[PositionManager] Loaded time from NVS: %04d-%02d-%02d %02d:%02d:%02d\n",
+                          _time.year + 2000, _time.month, _time.day, _time.hour, _time.minute, _time.second);
+        }
     }
+
+    if (!loadedFromNvs) {
+        _time = defaultTime;
+        saveTimeToNvs(_time);
+        Serial.printf("[PositionManager] Updated NVS to default/build time: %04d-%02d-%02d %02d:%02d:%02d\n",
+                      _time.year + 2000, _time.month, _time.day, _time.hour, _time.minute, _time.second);
+    }
+
+    _lastTickMillis = millis();
 
     // 初始化GNSS模块（如果存在）
     if (_gnss) {
@@ -101,19 +111,27 @@ bool PositionManager::begin() {
  * @return 更新是否成功
  */
 bool PositionManager::update() {
-    // 如果使用手动时间和位置，不需要更新
+    // 无 GNSS 时基于 millis() 维持系统基准时间走时（即使处于时间机器预览模式，后台基准时间也继续走时）
+    uint32_t now = millis();
+    uint32_t elapsedSec = (now - _lastTickMillis) / 1000;
+    if (elapsedSec > 0) {
+        _lastTickMillis += elapsedSec * 1000;
+        if (isValidTimeData(_time)) {
+            uint32_t ts = calculateTimestamp(_time) + elapsedSec;
+            _time = getTimeData(ts);
+        }
+    }
+
+    // 如果使用手动时间和位置，不需要更新GNSS
     if (_useManualTime && _useManualPosition) {
         return true;
     }
 
-    // 更新GNSS数据（如果存在）
-    if (_gnss) {
-        if (_gnss->update()) {
-            // 从GNSS数据更新位置和时间
-            GnssData gnssData = _gnss->getData();
-            updateFromGnss(gnssData);
-            return true;
-        }
+    // 由 AppMain 按间隔节流调用 _gnss->update()，此处仅消费已就绪的新 GNSS 数据，避免每帧重复轮询串口造成卡顿
+    if (_gnss && _gnss->hasNewData()) {
+        GnssData gnssData = _gnss->getData();
+        updateFromGnss(gnssData);
+        return true;
     }
 
     return false;
@@ -142,14 +160,14 @@ PositionData PositionManager::getPosition() {
  */
 TimeData PositionManager::getTime() {
     if (_useManualTime) {
-        // 检查手动时间是否有效，如果无效返回默认本地时间（2026年7月14日 22:00）
+        // 检查手动时间是否有效，如果无效返回默认本地时间（2026年11月13日 22:00）
         if (!hasValidTime()) {
             return getDefaultTime();
         }
         return _manualTime;
     }
     
-    // 检查时间是否有效，如果无效返回默认本地时间2026/7/14 22:00
+    // 检查时间是否有效，如果无效返回默认本地时间2026/11/13 22:00
     if (!hasValidTime()) {
         return getDefaultTime();
     }
@@ -272,6 +290,42 @@ void PositionManager::enableManualTime(bool enable) {
 }
 
 /**
+ * @brief 将当前时间（含手动调节后的时间）作为系统基准时间持久化到 NVS，并恢复走时
+ */
+void PositionManager::saveCurrentTimeToNvs() {
+    uint32_t utcTs = getTimestamp();
+    _time = getTimeData(utcTs);
+    _lastTickMillis = millis();
+    _useManualTime = false;
+    saveTimeToNvs(_time);
+    _lastSaveTime = _lastTickMillis;
+    Serial.printf("[PositionManager] Saved synced UTC time to NVS: %04d-%02d-%02d %02d:%02d:%02d\n",
+                  _time.year + 2000, _time.month, _time.day, _time.hour, _time.minute, _time.second);
+}
+
+/**
+ * @brief 将 UTC 时间写入 NVS
+ */
+void PositionManager::saveTimeToNvs(const TimeData& utcTime) {
+    _preferences.putUChar("time_ver", 2);
+    _preferences.putUShort("year", utcTime.year);
+    _preferences.putUChar("month", utcTime.month);
+    _preferences.putUChar("day", utcTime.day);
+    _preferences.putUChar("hour", utcTime.hour);
+    _preferences.putUChar("minute", utcTime.minute);
+    _preferences.putUChar("second", utcTime.second);
+}
+
+/**
+ * @brief 检查时间结构体字段是否在有效范围内
+ */
+bool PositionManager::isValidTimeData(const TimeData& time) {
+    return (time.year != 0 && time.year <= 100 &&
+            time.month >= 1 && time.month <= 12 &&
+            time.day >= 1 && time.day <= 31);
+}
+
+/**
  * @brief 设置手动位置
  * @param position 手动设置的位置数据
  */
@@ -309,13 +363,9 @@ bool PositionManager::hasValidPosition() {
  */
 bool PositionManager::hasValidTime() {
     if (_useManualTime) {
-        return (_manualTime.year != 0 && _manualTime.year <= 100 && 
-                _manualTime.month >= 1 && _manualTime.month <= 12 && 
-                _manualTime.day >= 1 && _manualTime.day <= 31);
+        return isValidTimeData(_manualTime);
     }
-    return (_time.year != 0 && _time.year <= 100 && 
-            _time.month >= 1 && _time.month <= 12 && 
-            _time.day >= 1 && _time.day <= 31);
+    return isValidTimeData(_time);
 }
 
 /**
@@ -387,18 +437,16 @@ void PositionManager::updateFromGnss(GnssData gnssData) {
         Serial.printf("[PositionManager] Invalid year from GNSS: %d, ignoring time update\n", gnssData.year);
     }
 
+    // 重置本地走时基准
+    _lastTickMillis = millis();
+
     // 缓存到 NVS
     uint32_t currentMillis = millis();
     if (currentMillis - _lastSaveTime > 60000 || _lastSaveTime == 0) {
         _preferences.putDouble("lat", _position.latitude);
         _preferences.putDouble("lon", _position.longitude);
         _preferences.putDouble("alt", _position.altitude);
-        _preferences.putUShort("year", _time.year);
-        _preferences.putUChar("month", _time.month);
-        _preferences.putUChar("day", _time.day);
-        _preferences.putUChar("hour", _time.hour);
-        _preferences.putUChar("minute", _time.minute);
-        _preferences.putUChar("second", _time.second);
+        saveTimeToNvs(_time);
         _lastSaveTime = currentMillis;
         Serial.println("[PositionManager] Saved time and position to NVS");
     }
@@ -455,13 +503,55 @@ uint32_t PositionManager::calculateTimestamp(TimeData time) {
  * @return 默认时间数据结构体
  */
 TimeData PositionManager::getDefaultTime() {
-    TimeData defaultTime;
-    defaultTime.year = 26; // 2026年
-    defaultTime.month = 8; // 8月
-    defaultTime.day = 13;  // 13日
-    defaultTime.hour = 16; // 本地时间2026-08-14 00:00 = UTC 16:00
-    defaultTime.minute = 0;
-    defaultTime.second = 0;
+    TimeData defaultTime = {26, 11, 13, 16, 0, 0};
+
+    // 使用编译期 __DATE__ ("Mmm dd yyyy") 和 __TIME__ ("hh:mm:ss") 作为出厂默认时间
+    const char* dateStr = __DATE__;
+    const char* timeStr = __TIME__;
+    const char* months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+
+    uint8_t month = 0;
+    for (uint8_t i = 0; i < 12; i++) {
+        if (strncmp(dateStr, months[i], 3) == 0) {
+            month = i + 1;
+            break;
+        }
+    }
+
+    int day = atoi(dateStr + 4);
+    int fullYear = atoi(dateStr + 7);
+    int hour = atoi(timeStr);
+    int minute = atoi(timeStr + 3);
+    int second = atoi(timeStr + 6);
+
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31 && fullYear >= 2000 && fullYear <= 2100) {
+        // 将编译机本地时间（按默认位置东八区 +8h）转换为 UTC 存储
+        hour -= 8;
+        if (hour < 0) {
+            hour += 24;
+            day -= 1;
+            if (day < 1) {
+                month -= 1;
+                if (month < 1) {
+                    month = 12;
+                    fullYear -= 1;
+                }
+                const uint8_t daysInMonth[] = {0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+                day = daysInMonth[month];
+                if (month == 2 && ((fullYear % 4 == 0 && fullYear % 100 != 0) || (fullYear % 400 == 0))) {
+                    day = 29;
+                }
+            }
+        }
+        defaultTime.year = (uint16_t)(fullYear - 2000);
+        defaultTime.month = (uint8_t)month;
+        defaultTime.day = (uint8_t)day;
+        defaultTime.hour = (uint8_t)hour;
+        defaultTime.minute = (uint8_t)minute;
+        defaultTime.second = (uint8_t)second;
+    }
+
     return defaultTime;
 }
 

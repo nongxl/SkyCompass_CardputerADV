@@ -1,8 +1,8 @@
 #include "user_input.h"
 #include <M5Cardputer.h>
 
-static const int TIME_STEP_SECONDS[6] = {300, 3600, 10800, 21600, 43200, 86400};
-static const char* TIME_STEP_NAMES[6] = {"5m", "1h", "3h", "6h", "12h", "24h"};
+static const int TIME_STEP_SECONDS[8] = {300, 3600, 10800, 21600, 43200, 86400, 604800, 2592000};
+static const char* TIME_STEP_NAMES[8] = {"5m", "1h", "3h", "6h", "12h", "24h", "7d", "30d"};
 
 /**
  * @brief 构造函数
@@ -73,14 +73,20 @@ bool UserInput::begin() {
  * @brief 处理用户输入
  */
 void UserInput::processInput() {
-    if (_keyboard->available()) {
-        // 按键防抖
-        unsigned long currentTime = millis();
-        // 获取按键
-        Key key = _keyboard->getKey();
-        
-        // 特殊处理：时间调节键（逗号和斜杠）绕过通用防抖，以支持极速连发
-        bool isTimeKey = (key == KEY_COMMA || key == KEY_SLASH);
+    if (!_keyboard->available()) {
+        // 松开按键后重置长按计时状态，避免下次短按直接触发长按加速
+        _lastDetectedKey = KEY_NONE;
+        _keyPressStartTime = 0;
+        return;
+    }
+
+    // 按键防抖
+    unsigned long currentTime = millis();
+    // 获取按键
+    Key key = _keyboard->getKey();
+    
+    // 特殊处理：时间调节键（逗号、句号、斜杠）绕过通用防抖，以支持极速连发
+    bool isTimeKey = (key == KEY_COMMA || key == KEY_SLASH || key == KEY_PERIOD);
         
         // 检测按键状态切换（从无到有，或更换了按键）
         if (key != _lastDetectedKey) {
@@ -109,14 +115,14 @@ void UserInput::processInput() {
             return;
         }
 
-        // 全局 [ 键与 ] 键切换时间倍率/步长挡位 (5m, 1h, 3h, 6h, 12h, 24h)
+        // 全局 [ 键与 ] 键切换时间倍率/步长挡位 (5m, 1h, 3h, 6h, 12h, 24h, 7d, 30d)
         if (key == KEY_LEFT_BRACKET || key == KEY_RIGHT_BRACKET) {
             if (currentTime - _lastBracketKeyTime >= _functionKeyDelay) {
                 _lastBracketKeyTime = currentTime;
                 if (key == KEY_LEFT_BRACKET) {
-                    _currentTimeStepIndex = (_currentTimeStepIndex - 1 + 6) % 6;
+                    _currentTimeStepIndex = (_currentTimeStepIndex - 1 + NUM_TIME_STEPS) % NUM_TIME_STEPS;
                 } else {
-                    _currentTimeStepIndex = (_currentTimeStepIndex + 1) % 6;
+                    _currentTimeStepIndex = (_currentTimeStepIndex + 1) % NUM_TIME_STEPS;
                 }
                 _uiManager->setTimeStepLabel(TIME_STEP_NAMES[_currentTimeStepIndex]);
                 if (currentPage == PAGE_MAIN) {
@@ -190,7 +196,6 @@ void UserInput::processInput() {
                 handleSettingsPageInput(key);
                 break;
         }
-    }
 }
 
 /**
@@ -243,33 +248,19 @@ void UserInput::handleMainPageInput(Key key) {
             }
             break;
         case KEY_COMMA: // 逗号键（左）减少时间
-            if (currentTime - _lastStepTime >= _stepRepeatDelay) {
-                bool isFirstPress = (currentTime - _lastStepTime > 400);
-                bool isLongPress = (currentTime - _keyPressStartTime > 400);
-                if (!isFirstPress && !isLongPress) break;
-
-                int32_t stepSec = TIME_STEP_SECONDS[_currentTimeStepIndex];
-                _lastStepTime = currentTime;
-                _timeMachine->adjustTime(-stepSec);
-                
-                if (_uiManager->getCurrentPage() == PAGE_MAIN) {
-                    _uiManager->redrawMainPage();
-                } else if (_uiManager->getCurrentPage() == PAGE_TIDE) {
-                    _uiManager->redrawTidePage();
-                }
-            }
+            adjustTimeWithAcceleration(-1);
             break;
         case KEY_SLASH:  // 斜杠键（右）增加时间
         case KEY_PERIOD: // 句点键（右）增加时间
-            if (currentTime - _lastStepTime >= _stepRepeatDelay) {
-                bool isFirstPress = (currentTime - _lastStepTime > 400);
-                bool isLongPress = (currentTime - _keyPressStartTime > 400);
-                if (!isFirstPress && !isLongPress) break;
-
-                int32_t stepSec = TIME_STEP_SECONDS[_currentTimeStepIndex];
-                _lastStepTime = currentTime;
-                _timeMachine->adjustTime(stepSec);
-                
+            adjustTimeWithAcceleration(1);
+            break;
+        case KEY_OK: // ENTER键：若处于时间机器模式，将目标时间保存为系统基准时间并持久化到 NVS
+            if (_timeMachine->isActive() && (currentTime - _lastOkKeyTime >= _functionKeyDelay)) {
+                _lastOkKeyTime = currentTime;
+                _timeMachine->applyTime();
+                _positionManager->saveCurrentTimeToNvs();
+                _timeMachine->deactivate();
+                _uiManager->setTimeMachineActive(false);
                 if (_uiManager->getCurrentPage() == PAGE_MAIN) {
                     _uiManager->redrawMainPage();
                 } else if (_uiManager->getCurrentPage() == PAGE_TIDE) {
@@ -279,6 +270,49 @@ void UserInput::handleMainPageInput(Key key) {
             break;
         default:
             break;
+    }
+}
+
+/**
+ * @brief 带长按阶梯加速的时间调节
+ * @param direction 方向（-1 回退，+1 前进）
+ */
+void UserInput::adjustTimeWithAcceleration(int direction) {
+    unsigned long currentTime = millis();
+    if (currentTime - _lastStepTime < _stepRepeatDelay) {
+        return;
+    }
+
+    bool isFirstPress = (currentTime - _lastStepTime > 400);
+    bool isLongPress = (currentTime - _keyPressStartTime > 400);
+    if (!isFirstPress && !isLongPress) {
+        return;
+    }
+
+    // 根据长按持续时间逐级提升步长倍率（1x -> 4x -> 12x -> 36x）
+    int32_t multiplier = 1;
+    if (isLongPress && _keyPressStartTime > 0) {
+        unsigned long holdDuration = currentTime - _keyPressStartTime;
+        if (holdDuration >= 5000) {
+            multiplier = 36;
+        } else if (holdDuration >= 3000) {
+            multiplier = 12;
+        } else if (holdDuration >= 1500) {
+            multiplier = 4;
+        }
+    }
+
+    int32_t stepSec = (int32_t)TIME_STEP_SECONDS[_currentTimeStepIndex] * multiplier * direction;
+    _lastStepTime = currentTime;
+    _timeMachine->adjustTime(stepSec);
+
+    // 若未处于插值动画中，立即刷新一次；插值动画期间由 UIManager::update() 逐帧驱动平滑渲染
+    if (!_timeMachine->isAnimating()) {
+        if (_uiManager->getCurrentPage() == PAGE_MAIN) {
+            _uiManager->redrawMainPage();
+        } else if (_uiManager->getCurrentPage() == PAGE_TIDE) {
+            _uiManager->redrawTidePage();
+        }
     }
 }
 
@@ -314,8 +348,11 @@ void UserInput::handleTimeMachinePageInput(Key key) {
             _timeMachine->selectNextField();
             break;
         case KEY_OK:
-        case KEY_SPACE: // OK键确认并返回主页面
+        case KEY_SPACE: // OK键确认并持久化到 NVS，返回主页面
             _timeMachine->applyTime();
+            _positionManager->saveCurrentTimeToNvs();
+            _timeMachine->deactivate();
+            _uiManager->setTimeMachineActive(false);
             _uiManager->setPage(PAGE_MAIN);
             break;
         case KEY_BACK:

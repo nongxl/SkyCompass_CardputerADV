@@ -257,69 +257,11 @@ void View3DRenderer::render3D(uint16_t centerX, uint16_t centerY, uint16_t radiu
         PositionData pos = _positionManager->getPosition();
 
         // 太阳轨迹同步 (30min 粒度)
-        if (!_sunTrajectoryCache.isValid) {
-            _sunTrajectoryCache.points3D.clear();
-            for (int i = 0; i <= 48; i++) {
-                uint32_t ts = (windowStartBlock + i) * 1800;
-                CelestialVector v = _celestialCore->getCelestialVector(ts, pos.latitude, pos.longitude, CELESTIAL_SUN);
-                _sunTrajectoryCache.points3D.push_back({(float)v.x, (float)v.y, (float)v.z});
-            }
-            _sunTrajectoryCache.cachedBaseHour = windowStartBlock; // 这里复用成员变量存 Block 索引
-            _sunTrajectoryCache.isValid = true;
-        } else if (windowStartBlock != _sunTrajectoryCache.cachedBaseHour) {
-            int32_t diff = (int32_t)windowStartBlock - (int32_t)_sunTrajectoryCache.cachedBaseHour;
-            if (abs(diff) >= 49) { _sunTrajectoryCache.isValid = false; }
-            else if (diff > 0) {
-                for (int32_t d = 0; d < diff; d++) {
-                    _sunTrajectoryCache.points3D.erase(_sunTrajectoryCache.points3D.begin());
-                    uint32_t newTs = (_sunTrajectoryCache.cachedBaseHour + 49) * 1800;
-                    CelestialVector v = _celestialCore->getCelestialVector(newTs, pos.latitude, pos.longitude, CELESTIAL_SUN);
-                    _sunTrajectoryCache.points3D.push_back({(float)v.x, (float)v.y, (float)v.z});
-                    _sunTrajectoryCache.cachedBaseHour++;
-                }
-            } else {
-                for (int32_t d = 0; d < -diff; d++) {
-                    _sunTrajectoryCache.points3D.pop_back();
-                    _sunTrajectoryCache.cachedBaseHour--;
-                    uint32_t newTs = _sunTrajectoryCache.cachedBaseHour * 1800;
-                    CelestialVector v = _celestialCore->getCelestialVector(newTs, pos.latitude, pos.longitude, CELESTIAL_SUN);
-                    _sunTrajectoryCache.points3D.insert(_sunTrajectoryCache.points3D.begin(), {(float)v.x, (float)v.y, (float)v.z});
-                }
-            }
-        }
+        updateTrajectoryCache(_sunTrajectoryCache, windowStartBlock, pos.latitude, pos.longitude, CELESTIAL_SUN);
         _sunPathPoints = _sunTrajectoryCache.points3D;
 
         // 月亮轨迹同步 (30min 粒度)
-        if (!_moonTrajectoryCache.isValid) {
-            _moonTrajectoryCache.points3D.clear();
-            for (int i = 0; i <= 48; i++) {
-                uint32_t ts = (windowStartBlock + i) * 1800;
-                CelestialVector v = _celestialCore->getCelestialVector(ts, pos.latitude, pos.longitude, CELESTIAL_MOON);
-                _moonTrajectoryCache.points3D.push_back({(float)v.x, (float)v.y, (float)v.z});
-            }
-            _moonTrajectoryCache.cachedBaseHour = windowStartBlock;
-            _moonTrajectoryCache.isValid = true;
-        } else if (windowStartBlock != _moonTrajectoryCache.cachedBaseHour) {
-            int32_t diff = (int32_t)windowStartBlock - (int32_t)_moonTrajectoryCache.cachedBaseHour;
-            if (abs(diff) >= 49) { _moonTrajectoryCache.isValid = false; }
-            else if (diff > 0) {
-                for (int32_t d = 0; d < diff; d++) {
-                    _moonTrajectoryCache.points3D.erase(_moonTrajectoryCache.points3D.begin());
-                    uint32_t newTs = (_moonTrajectoryCache.cachedBaseHour + 49) * 1800;
-                    CelestialVector v = _celestialCore->getCelestialVector(newTs, pos.latitude, pos.longitude, CELESTIAL_MOON);
-                    _moonTrajectoryCache.points3D.push_back({(float)v.x, (float)v.y, (float)v.z});
-                    _moonTrajectoryCache.cachedBaseHour++;
-                }
-            } else {
-                for (int32_t d = 0; d < -diff; d++) {
-                    _moonTrajectoryCache.points3D.pop_back();
-                    _moonTrajectoryCache.cachedBaseHour--;
-                    uint32_t newTs = _moonTrajectoryCache.cachedBaseHour * 1800;
-                    CelestialVector v = _celestialCore->getCelestialVector(newTs, pos.latitude, pos.longitude, CELESTIAL_MOON);
-                    _moonTrajectoryCache.points3D.insert(_moonTrajectoryCache.points3D.begin(), {(float)v.x, (float)v.y, (float)v.z});
-                }
-            }
-        }
+        updateTrajectoryCache(_moonTrajectoryCache, windowStartBlock, pos.latitude, pos.longitude, CELESTIAL_MOON);
         _moonPathPoints = _moonTrajectoryCache.points3D;
     }
 
@@ -752,50 +694,35 @@ void View3DRenderer::updateGalaxyProjectedPoints(uint16_t centerX, uint16_t cent
         }
     }
 
-    // 2. 银河24小时投影缓存更新
+    // 2. 银河按需槽位缓存更新（每帧最多只计算当前插值所需的 2 个小时槽，彻底消除跨天卡顿）
     uint32_t currentUTCHour = currentTimestamp / 3600;
-    uint32_t windowStartHour = currentUTCHour - 12; 
+    uint32_t nextUTCHour = currentUTCHour + 1;
+    int slot0 = (int)(currentUTCHour % 24);
+    int slot1 = (int)(nextUTCHour % 24);
+
     if (!_galaxyCache.isValid) {
         for (int i = 0; i < 24; i++) {
-            uint32_t ts = (windowStartHour + i) * 3600;
+            _galaxyCache.slotHour[i] = UINT32_MAX;
+        }
+        _galaxyCache.isValid = true;
+    }
+
+    auto ensureGalaxySlot = [&](int slot, uint32_t hour) {
+        if (_galaxyCache.slotHour[slot] != hour) {
+            uint32_t ts = hour * 3600;
             double lst = _celestialCore->calculateLST(ts, lon);
-            _galaxyCache.hourlyPoints[i].clear();
+            _galaxyCache.hourlyPoints[slot].clear();
+            _galaxyCache.hourlyPoints[slot].reserve(_galaxyStars.size());
             for (const auto& star : _galaxyStars) {
                 CelestialVector gVec = _celestialCore->raDecToHorizontal(star.ra, star.dec, lst, lat);
-                _galaxyCache.hourlyPoints[i].push_back({(float)gVec.x, (float)gVec.y, (float)gVec.z});
+                _galaxyCache.hourlyPoints[slot].push_back({(float)gVec.x, (float)gVec.y, (float)gVec.z});
             }
+            _galaxyCache.slotHour[slot] = hour;
         }
-        _galaxyCache.cachedBaseHour = windowStartHour;
-        _galaxyCache.isValid = true;
-    } else if (windowStartHour != _galaxyCache.cachedBaseHour) {
-        int32_t hDiff = (int32_t)windowStartHour - (int32_t)_galaxyCache.cachedBaseHour;
-        if (abs(hDiff) >= 24) { _galaxyCache.isValid = false; }
-        else if (hDiff > 0) {
-            for (int d = 0; d < hDiff; d++) {
-                for (int i = 0; i < 23; i++) std::swap(_galaxyCache.hourlyPoints[i], _galaxyCache.hourlyPoints[i+1]);
-                uint32_t nextTs = (_galaxyCache.cachedBaseHour + 24) * 3600;
-                double lst = _celestialCore->calculateLST(nextTs, lon);
-                _galaxyCache.hourlyPoints[23].clear();
-                for (const auto& star : _galaxyStars) {
-                    CelestialVector gVec = _celestialCore->raDecToHorizontal(star.ra, star.dec, lst, lat);
-                    _galaxyCache.hourlyPoints[23].push_back({(float)gVec.x, (float)gVec.y, (float)gVec.z});
-                }
-                _galaxyCache.cachedBaseHour++;
-            }
-        } else {
-            for (int d = 0; d < -hDiff; d++) {
-                for (int i = 23; i > 0; i--) std::swap(_galaxyCache.hourlyPoints[i], _galaxyCache.hourlyPoints[i-1]);
-                _galaxyCache.cachedBaseHour--;
-                uint32_t prevTs = _galaxyCache.cachedBaseHour * 3600;
-                double lst = _celestialCore->calculateLST(prevTs, lon);
-                _galaxyCache.hourlyPoints[0].clear();
-                for (const auto& star : _galaxyStars) {
-                    CelestialVector gVec = _celestialCore->raDecToHorizontal(star.ra, star.dec, lst, lat);
-                    _galaxyCache.hourlyPoints[0].push_back({(float)gVec.x, (float)gVec.y, (float)gVec.z});
-                }
-            }
-        }
-    }
+    };
+
+    ensureGalaxySlot(slot0, currentUTCHour);
+    ensureGalaxySlot(slot1, nextUTCHour);
 
     // 3. 计算可见度和基础颜色
     float galaxyVisibility = 1.0f;
@@ -823,8 +750,6 @@ void View3DRenderer::updateGalaxyProjectedPoints(uint16_t centerX, uint16_t cent
     }
 
     // 4. 计算所有投影点
-    int32_t hIdx = (int32_t)currentUTCHour - (int32_t)_galaxyCache.cachedBaseHour;
-    if (hIdx < 0) hIdx = 0; if (hIdx > 22) hIdx = 22;
     float interpolationFactor = (float)(currentTimestamp % 3600) / 3600.0f;
 
     _galaxyProjectedPoints.clear();
@@ -833,10 +758,10 @@ void View3DRenderer::updateGalaxyProjectedPoints(uint16_t centerX, uint16_t cent
     const int numLonGroups = totalParticles / particlesPerPoint;
 
     for (size_t i = 0; i < _galaxyStars.size(); i++) {
-        if (i >= _galaxyCache.hourlyPoints[hIdx].size() || i >= _galaxyCache.hourlyPoints[hIdx+1].size()) continue;
+        if (i >= _galaxyCache.hourlyPoints[slot0].size() || i >= _galaxyCache.hourlyPoints[slot1].size()) continue;
         
-        const Point3D& p0 = _galaxyCache.hourlyPoints[hIdx][i];
-        const Point3D& p1 = _galaxyCache.hourlyPoints[hIdx+1][i];
+        const Point3D& p0 = _galaxyCache.hourlyPoints[slot0][i];
+        const Point3D& p1 = _galaxyCache.hourlyPoints[slot1][i];
         
         Point3D interpolated = {
             p0.x + (p1.x - p0.x) * interpolationFactor,
@@ -1167,4 +1092,40 @@ bool View3DRenderer::getCachedMoonPosition(uint32_t timestamp, double& azimuth, 
         }
     }
     return false;
+}
+
+void View3DRenderer::updateTrajectoryCache(TrajectoryCache& cache, uint32_t windowStartBlock, double lat, double lon, CelestialBodyType type) {
+    int32_t diff = cache.isValid ? ((int32_t)windowStartBlock - (int32_t)cache.cachedBaseHour) : 0;
+
+    // 缓存失效或跨度超过 12 块（6 小时）时，当帧直接全量重建，避免 erase(begin()) 多次移动内存和跨帧滞后
+    if (!cache.isValid || abs(diff) > 12) {
+        cache.points3D.clear();
+        cache.points3D.reserve(49);
+        for (int i = 0; i <= 48; i++) {
+            uint32_t ts = (windowStartBlock + i) * 1800;
+            CelestialVector v = _celestialCore->getCelestialVector(ts, lat, lon, type);
+            cache.points3D.push_back({(float)v.x, (float)v.y, (float)v.z});
+        }
+        cache.cachedBaseHour = windowStartBlock;
+        cache.isValid = true;
+        return;
+    }
+
+    if (diff > 0) {
+        for (int32_t d = 0; d < diff; d++) {
+            cache.points3D.erase(cache.points3D.begin());
+            uint32_t newTs = (cache.cachedBaseHour + 49) * 1800;
+            CelestialVector v = _celestialCore->getCelestialVector(newTs, lat, lon, type);
+            cache.points3D.push_back({(float)v.x, (float)v.y, (float)v.z});
+            cache.cachedBaseHour++;
+        }
+    } else if (diff < 0) {
+        for (int32_t d = 0; d < -diff; d++) {
+            cache.points3D.pop_back();
+            cache.cachedBaseHour--;
+            uint32_t newTs = cache.cachedBaseHour * 1800;
+            CelestialVector v = _celestialCore->getCelestialVector(newTs, lat, lon, type);
+            cache.points3D.insert(cache.points3D.begin(), {(float)v.x, (float)v.y, (float)v.z});
+        }
+    }
 }

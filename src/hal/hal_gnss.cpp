@@ -171,8 +171,6 @@ public:
                 _data.month = gnssMonth;
                 _data.day = gnssDay;
                 _data.dateValid = _gps->date.isValid();
-                
-                Serial.printf("[GNSS] Date updated: %04d-%02d-%02d, valid: %d, dateValid: %d\n", _data.year, _data.month, _data.day, _data.dateValid, _gps->date.isValid());
             } else {
                 //忽略无效数据
                 //Serial.printf("[GNSS] Invalid date received: %04d-%02d-%02d (monthValid=%d, dayValid=%d), ignoring\n", gnssYear, gnssMonth, gnssDay, monthValid, dayValid);

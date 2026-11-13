@@ -39,8 +39,8 @@ CelestialEvent CelestialEventPredictor::findNextEvent(uint32_t startTimestamp) {
                 return _cachedEvent;
             }
         } else {
-            // 如果上一次搜索结果为 NONE，且时间微动（小于 1 天），直接返回 NONE 缓存，绝不重复扫频
-            if (labs((int32_t)startTimestamp - (int32_t)_lastSearchTimestamp) < 86400) {
+            // 如果上一次搜索结果为 NONE，且时间变化小于 7 天，直接返回 NONE 缓存，避免快进时反复全量扫描未来 1 年
+            if (labs((int32_t)startTimestamp - (int32_t)_lastSearchTimestamp) < 7 * 86400) {
                 return _cachedEvent;
             }
         }
