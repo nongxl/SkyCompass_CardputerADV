@@ -171,3 +171,12 @@ This project is licensed under the [PolyForm Noncommercial License 1.0.0](LICENS
 - **Offline Terrain**: DEM-based obstruction analysis.
 - **Barometric Correction**: Use internal DPS310 for improved altitude accuracy.
 - **Planetary Support**: Mars, Jupiter, etc.
+
+## Sponsor & Support
+
+If this project has been helpful and you would like to support its ongoing open-source maintenance and active development, feel free to treat me to some KFC 🍗! Your support is greatly appreciated!
+
+| WeChat Pay | Alipay |
+| :---: | :---: |
+| <img src="docs/wechat_pay.png" width="260" alt="WeChat Pay" /> | <img src="docs/alipay.jpg" width="260" alt="Alipay" /> |
+
